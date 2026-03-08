@@ -17,3 +17,7 @@ endif
 if DEVICE_LMS
 SUBDIRS += lms
 endif
+
+if DEVICE_SOAPY
+SUBDIRS += soapy_trx
+endif

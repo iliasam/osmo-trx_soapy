@@ -96,6 +96,7 @@ RadioInterface *makeRadioInterface(struct trx_ctx *trx,
 		break;
 	case RadioDevice::RESAMP_64M:
 	case RadioDevice::RESAMP_100M:
+	case RadioDevice::RESAMP_SOAPY1:
 		radio = new RadioInterfaceResamp(usrp, trx->cfg.tx_sps,
 						 trx->cfg.rx_sps);
 		break;

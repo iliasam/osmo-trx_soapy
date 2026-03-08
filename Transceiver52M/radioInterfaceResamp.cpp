@@ -36,6 +36,7 @@ extern "C" {
 #define RESAMP_64M_INRATE			65
 #define RESAMP_64M_OUTRATE			96
 
+
 /* Resampling parameters for 100 MHz clocking */
 #define RESAMP_100M_INRATE			52
 #define RESAMP_100M_OUTRATE			75
@@ -55,9 +56,9 @@ extern "C" {
 static Resampler *upsampler = NULL;
 static Resampler *dnsampler = NULL;
 static size_t resamp_inrate = 0;
-static size_t resamp_inchunk = 0;
+static size_t resamp_inchunk_len = 0;
 static size_t resamp_outrate = 0;
-static size_t resamp_outchunk = 0;
+static size_t resamp_outchunk_len = 0;
 
 RadioInterfaceResamp::RadioInterfaceResamp(RadioDevice *wDevice,
 					   size_t tx_sps, size_t rx_sps)
@@ -116,14 +117,29 @@ bool RadioInterfaceResamp::init(int type)
 		resamp_inrate = RESAMP_100M_INRATE;
 		resamp_outrate = RESAMP_100M_OUTRATE;
 		break;
+	case RadioDevice::RESAMP_SOAPY1:
+		resamp_inrate = 625;
+		//resamp_outrate = 625;
+		resamp_outrate = 1024;
+		break;
 	case RadioDevice::NORMAL:
 	default:
 		LOG(ALERT) << "Invalid device configuration";
 		return false;
 	}
 
-	resamp_inchunk = resamp_inrate * 4 * mSPSRx;
-	resamp_outchunk = resamp_outrate * 4 * mSPSRx;
+	LOGC(DDEV, NOTICE) << "Resampling IN= " << resamp_inrate;
+	LOGC(DDEV, NOTICE) << "Resampling OUT= " << resamp_outrate;
+
+	resamp_inchunk_len = resamp_inrate * mSPSRx;
+	resamp_outchunk_len = resamp_outrate * mSPSRx;
+
+    //resamp_inchunk_len = resamp_inrate * mSPSRx;
+    //resamp_outchunk_len = resamp_outrate * mSPSRx;
+
+    writeTimestamp = 0;
+
+
 
 	if (mSPSTx == 4)
 		cutoff = RESAMP_TX4_FILTER;
@@ -146,14 +162,14 @@ bool RadioInterfaceResamp::init(int type)
 	 * and requires headroom equivalent to the filter length. Low
 	 * rate buffers are allocated in the main radio interface code.
 	 */
-	sendBuffer[0] = new RadioBuffer(NUMCHUNKS, resamp_inchunk,
+	sendBuffer[0] = new RadioBuffer(NUMCHUNKS, resamp_inchunk_len,
 					  upsampler->len(), true);
-	recvBuffer[0] = new RadioBuffer(NUMCHUNKS * 20, resamp_inchunk, 0, false);
+	recvBuffer[0] = new RadioBuffer(NUMCHUNKS * 20, resamp_inchunk_len, 0, false);
 
 	outerSendBuffer =
-		new signalVector(NUMCHUNKS * resamp_outchunk);
+		new signalVector(NUMCHUNKS * resamp_outchunk_len);
 	outerRecvBuffer =
-		new signalVector(resamp_outchunk, dnsampler->len());
+		new signalVector(resamp_outchunk_len, dnsampler->len());
 
 	convertSendBuffer[0] = new short[outerSendBuffer->size() * 2];
 	convertRecvBuffer[0] = new short[outerRecvBuffer->size() * 2];
@@ -172,26 +188,26 @@ int RadioInterfaceResamp::pullBuffer()
 
 	/* Outer buffer access size is fixed */
 	num_recv = mDevice->readSamples(convertRecvBuffer,
-				       resamp_outchunk,
+				       resamp_outchunk_len,
 				       &overrun,
 				       readTimestamp,
 				       &local_underrun);
-	if (num_recv != (int) resamp_outchunk) {
+	if (num_recv != (int) resamp_outchunk_len) {
 		LOG(ALERT) << "Receive error " << num_recv;
 		return -1;
 	}
 
 	convert_short_float((float *) outerRecvBuffer->begin(),
-			    convertRecvBuffer[0], 2 * resamp_outchunk);
+			    convertRecvBuffer[0], 2 * resamp_outchunk_len);
 
 	osmo_trx_sync_or_and_fetch(&underrun, local_underrun);
-	readTimestamp += (TIMESTAMP) resamp_outchunk;
+	readTimestamp += (TIMESTAMP) resamp_outchunk_len;
 
 	/* Write to the end of the inner receive buffer */
 	rc = dnsampler->rotate((float *) outerRecvBuffer->begin(),
-			       resamp_outchunk,
+			       resamp_outchunk_len,
 			       recvBuffer[0]->getWriteSegment(),
-			       resamp_inchunk);
+			       resamp_inchunk_len);
 	if (rc < 0) {
 		LOG(ALERT) << "Sample rate upsampling error";
 	}
@@ -213,27 +229,27 @@ bool RadioInterfaceResamp::pushBuffer()
 
 	/* Always send from the beginning of the buffer */
 	rc = upsampler->rotate(sendBuffer[0]->getReadSegment(),
-			       resamp_inchunk,
+			       resamp_inchunk_len,
 			       (float *) outerSendBuffer->begin(),
-			       resamp_outchunk);
+			       resamp_outchunk_len);
 	if (rc < 0) {
 		LOG(ALERT) << "Sample rate downsampling error";
 	}
 
 	convert_float_short(convertSendBuffer[0],
 			    (float *) outerSendBuffer->begin(),
-			    powerScaling[0], 2 * resamp_outchunk);
+			    powerScaling[0], 2 * resamp_outchunk_len);
 
 	numSent = mDevice->writeSamples(convertSendBuffer,
-				       resamp_outchunk,
+				       resamp_outchunk_len,
 				       &local_underrun,
 				       writeTimestamp);
-	if (numSent != resamp_outchunk) {
+	if (numSent != resamp_outchunk_len) {
 		LOG(ALERT) << "Transmit error " << numSent;
 	}
 
 	osmo_trx_sync_or_and_fetch(&underrun, local_underrun);
-	writeTimestamp += resamp_outchunk;
+	writeTimestamp += resamp_outchunk_len;
 
 	return true;
 }

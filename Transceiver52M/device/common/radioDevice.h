@@ -49,6 +49,7 @@ class RadioDevice {
     RESAMP_64M,
     RESAMP_100M,
     MULTI_ARFCN,
+    RESAMP_SOAPY1,
   };
 
   static RadioDevice *make(size_t tx_sps, size_t rx_sps, InterfaceType type,

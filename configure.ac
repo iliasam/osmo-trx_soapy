@@ -177,6 +177,11 @@ AS_IF([test "x$with_lms" = "xyes"], [
     PKG_CHECK_MODULES(LMS, LimeSuite)
 ])
 
+AC_ARG_WITH(soapy_trx, [
+    AS_HELP_STRING([--with-soapy-trx],
+        [enable hackrf+rtl_sdr pair])
+])
+
 AS_IF([test "x$with_uhd" = "xyes"],[
     PKG_CHECK_MODULES(UHD, uhd >= 003.011,
         [AC_DEFINE(USE_UHD_3_11, 1, UHD version 3.11.0 or higher)],
@@ -239,9 +244,11 @@ AS_IF([test "x$osmo_cv_cc_has___sync_fetch_and_and" = "xyes" && test "x$osmo_cv_
 AM_CONDITIONAL(DEVICE_UHD, [test "x$with_uhd" = "xyes"])
 AM_CONDITIONAL(DEVICE_USRP1, [test "x$with_usrp1" = "xyes"])
 AM_CONDITIONAL(DEVICE_LMS, [test "x$with_lms" = "xyes"])
+AM_CONDITIONAL(DEVICE_SOAPY, [test "x$with_soapy_trx" = "xyes"])
 AM_CONDITIONAL(DEVICE_IPC, [test "x$with_ipc" = "xyes"])
 AM_CONDITIONAL(ARCH_ARM, [test "x$with_neon" = "xyes" || test "x$with_neon_vfpv4" = "xyes"])
 AM_CONDITIONAL(ARCH_ARM_A15, [test "x$with_neon_vfpv4" = "xyes"])
+
 
 PKG_CHECK_MODULES(LIBUSB, libusb-1.0)
 PKG_CHECK_MODULES(FFTWF, fftw3f)
@@ -324,6 +331,7 @@ AC_CONFIG_FILES([\
     Transceiver52M/device/uhd/Makefile \
     Transceiver52M/device/usrp1/Makefile \
     Transceiver52M/device/lms/Makefile \
+    Transceiver52M/device/soapy_trx/Makefile \
     Transceiver52M/device/ipc/Makefile \
     tests/Makefile \
     tests/CommonLibs/Makefile \
