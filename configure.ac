@@ -177,9 +177,17 @@ AS_IF([test "x$with_lms" = "xyes"], [
     PKG_CHECK_MODULES(LMS, LimeSuite)
 ])
 
+
 AC_ARG_WITH(soapy_trx, [
     AS_HELP_STRING([--with-soapy-trx],
-        [enable hackrf+rtl_sdr pair])
+        [enable SoapySDR driver])
+])
+
+AS_IF([test "x$with_soapy_trx" = "xyes"], [
+    PKG_CHECK_MODULES([SOAPYSDR], [SoapySDR >= 0.7])
+
+    AC_SUBST([SOAPYSDR_CFLAGS])
+    AC_SUBST([SOAPYSDR_LIBS])
 ])
 
 AS_IF([test "x$with_uhd" = "xyes"],[

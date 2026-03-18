@@ -41,24 +41,15 @@ extern "C" {
 #endif
 
 
-#define SAMPLE_BUF_SZ    (1 << 20) /* Size of Rx timestamp based Ring buffer, in bytes */
+//#define SAMPLE_BUF_SZ    (1 << 20) /* Size of Rx timestamp based Ring buffer, in bytes */
 
-//#define PUT_PACKET_SIZE_SAMPLES     TX_PACKET_SIZE_SAMPLES
+
 #define PUT_PACKET_SIZE_SAMPLES     2500
-#define PUT_PACKET_SIZE_BYTES       (PUT_PACKET_SIZE_SAMPLES * HACKRF_SAMPLE_SIZE_BYTES)
 
-//#define TX_PACKET_SIZE_SAMPLES      2500
-#define TX_PACKET_SIZE_SAMPLES      4096
-#define TX_PACKET_SIZE_BYTES        (TX_PACKET_SIZE_SAMPLES * HACKRF_SAMPLE_SIZE_BYTES)
-//#define TX_FIFO_ITEMS_CNT           2
-//#define BUFFER_SIZE_BYTES           TX_PACKET_SIZE_BYTES * TX_FIFO_ITEMS_CNT //items
-
-#define BUFFER_SIZE_BYTES           TX_PACKET_SIZE_BYTES * 3
-
-#define HACKRF_SAMPLE_SIZE_BYTES    2 //hackrf buffer - 8bit*2 per sample
+#define BUFFER_SIZE_BYTES           PUT_PACKET_SIZE_SAMPLES * 3
 
 #define SAMPLE_RATE_HZ              (GSMRATE * tx_sps)
-//#define SAMPLE_RATE_HZ              (1.7749e6)
+
 
 #define DEV_HW_TYPE                 NORMAL
 //#define DEV_HW_TYPE                 RESAMP_SOAPY1
@@ -135,12 +126,12 @@ soapy_device::soapy_device(size_t tx_sps, size_t rx_sps, InterfaceType iface, si
 soapy_device::~soapy_device()
 {
 	unsigned int i;
-	LOGC(DDEV, INFO) << "Closing SOAPY device";
+	LOGC(DDEV, NOTICE) << "Closing SOAPY device";
 
-    if (dev) {
-		hackrf_stop_rx(dev);
-		hackrf_stop_tx(dev);
-		hackrf_close(dev);
+    if (device) {
+		device->deactivateStream(txStream);
+        device->closeStream(txStream);
+		SoapySDR::Device::unmake(device);
 	}
 
 	if (log_file.is_open())
@@ -199,29 +190,54 @@ int soapy_device::open(const std::string &args, int ref, bool swap_channels)
 
 	m_dev_type = soapy_dev_type::SOAPY_TYPE1;
 
-	int res = hackrf_init();
-	if (res != HACKRF_SUCCESS)
+	SoapySDR::KwargsList sdr_results = SoapySDR::Device::enumerate("driver=plutosdr");
+
+	if (sdr_results.empty()) 
 	{
-		LOGC(DDEV, ERROR) << "Can't init hackrf lib";
+    	LOGC(DDEV, ERROR) << "Soapy device was not found!";
 		return -1;
 	}
 
-	res = hackrf_open(&dev);
-	if (res != HACKRF_SUCCESS)
-	{
-		LOGC(DDEV, ERROR) << "Failed to open hackrf device: " << hackrf_error_name((hackrf_error)res);
+	//device = SoapySDR::Device::make("driver=plutosdr,usb_direct=1,timestamp_every=2500,loopback=0");
+	device = SoapySDR::Device::make("driver=plutosdr,direct=1,loopback=0");
+
+	if (device == nullptr) {
+    	LOGC(DDEV, ERROR) << "Soapy device opening error!";
 		return -1;
-	}
+	}	
 
 	ts_initial = 0;//do not delete!
 
 	set_rates_tx();
 	init_gains();
 
+	SoapySDR::Kwargs deviceArgs;
+	deviceArgs["bufflen"] = "2500";
+
+	txStream = device->setupStream(SOAPY_SDR_TX, SOAPY_SDR_CS16, std::vector<size_t>(), deviceArgs);
+	//txStream = device->setupStream(SOAPY_SDR_TX, SOAPY_SDR_CS16, {0}); // Complex signed 16-bit integers (complex int16)
+	//SoapySDR::Stream *txStream = device->setupStream(SOAPY_SDR_TX, SOAPY_SDR_CF32, {0});
+
+	size_t tx_mtu_size = device->getStreamMTU(txStream);
+	LOGC(DDEV, NOTICE) << "TX MTU Size " <<  tx_mtu_size;
+
+	if (txStream == nullptr)
+	{
+		LOGC(DDEV, ERROR) << "Soapy TX stream opening error!";
+		return -1;
+	}
+	
+
+	int res = 0;
+	res = device->activateStream(txStream); // Start the stream
+	if (res != 0)
+	{
+		LOGC(DDEV, ERROR) << "Soapy TX stream activate error! " << res;
+		return -1;
+	}
+
     callback_data.tx_buf0 = (uint8_t*) malloc(BUFFER_SIZE_BYTES);
     sfifo_init(&callback_data.tx_fifo, callback_data.tx_buf0, BUFFER_SIZE_BYTES);
-
-    tmp_tx_buf_p = (uint8_t*)malloc(PUT_PACKET_SIZE_BYTES);
 
     sem_init(&callback_data.tx_mutex, 0, 1);
 
@@ -235,11 +251,8 @@ int soapy_device::open(const std::string &args, int ref, bool swap_channels)
 			  << " chans: " << chans;
 
     //test_tx();
-
-
 	return DEV_HW_TYPE;
 }
-
 
 
 bool soapy_device::start()
@@ -260,7 +273,7 @@ bool soapy_device::start()
 
 bool soapy_device::stop()
 {
-	unsigned int i;
+	//unsigned int i;
 
 	LOGC(DDEV, NOTICE) << "dev stop";
 
@@ -390,6 +403,7 @@ std::string soapy_device::getRxAntenna(size_t chan)
 
 bool soapy_device::setTxAntenna(const std::string & ant, size_t chan)
 {
+	//ilia todo
 	return true;
 }
 
@@ -413,9 +427,9 @@ GSM::Time soapy_device::minLatency() {
 int soapy_device::readSamples(std::vector < short *>&bufs, int len, bool * overrun,
 			   TIMESTAMP timestamp, bool * underrun)
 {
-	int rc, num_smpls, expect_smpls;
-	ssize_t avail_smpls;
-	TIMESTAMP expect_timestamp;
+	//int rc, num_smpls, expect_smpls;
+	//ssize_t avail_smpls;
+	//TIMESTAMP expect_timestamp;
 	unsigned int i;
 
 	if (bufs.size() != chans) {
@@ -436,9 +450,10 @@ int soapy_device::readSamples(std::vector < short *>&bufs, int len, bool * overr
 
 void soapy_device::test_tx()
 {
+	/*
     setTxFreq(955.8e6, 0);
 
-    char path[256] = "/home/osboxes/GSM/osmo-trx-1.4.1/Transceiver52M/record_u24_copy_8bit.sdriq";
+    char path[256] = "/Transceiver52M/record_u24_copy_8bit.sdriq";
     FILE *in_file;
     in_file = fopen(path, "rb");
     if (in_file == NULL) {
@@ -447,7 +462,7 @@ void soapy_device::test_tx()
     }
 
     LOGC(DDEV, NOTICE) << "START TX STREAM";
-    hackrf_start_tx(dev, tx_callback, &callback_data);
+    //hackrf_start_tx(dev, tx_callback, &callback_data);
 
     uint64_t start_time_s = (unsigned long)time(NULL);
     uint64_t prev_diff_s = 0;
@@ -479,65 +494,17 @@ void soapy_device::test_tx()
 
     }//while 1
     LOGC(DDEV, NOTICE) << "END TX STREAM";
-}
-
-int soapy_device::tx_callback(hackrf_transfer* transfer)
-{
-    size_t bytes_to_write = transfer->valid_length; //I get 262144
-    size_t samples_to_write = bytes_to_write / 2;//i+q
-    int8_t* sdr_tx_buffer = (int8_t*)transfer->buffer;//SDR lib buffer, destination
-
-    //LOGC(DDEV, NOTICE) << "tx callback" << std::endl;
-
-    callback_data_t *data_p = (callback_data_t *)transfer->tx_ctx;
-    if (data_p == NULL)
-    {
-        LOGC(DDEV, ERROR) << "tx callback err1" << std::endl;
-        return 0;
-    }
-
-    sfifo_t *fifo_tmp = &(data_p->tx_fifo);
-
-
-    if (fifo_tmp->amount < TX_PACKET_SIZE_BYTES)
-    {
-        //printf("Handler err - no data\n");
-        transfer->valid_length = TX_PACKET_SIZE_BYTES;
-        data_p->tx_err1++;
-        return 0;
-    }
-    else
-    {
-        sem_wait(&data_p->tx_mutex);
-
-        uint32_t upper_size = fifo_tmp->size - fifo_tmp->tail;
-        if (upper_size > TX_PACKET_SIZE_BYTES)
-        {
-            upper_size = TX_PACKET_SIZE_BYTES;
-        }
-        memcpy(sdr_tx_buffer, &fifo_tmp->buf[fifo_tmp->tail], upper_size);
-        uint32_t lower_size = TX_PACKET_SIZE_BYTES - upper_size;
-        memcpy(sdr_tx_buffer, &fifo_tmp->buf[0], lower_size);
-
-        fifo_tmp->tail += TX_PACKET_SIZE_BYTES;
-        fifo_tmp->tail %= fifo_tmp->size;
-        fifo_tmp->amount -= TX_PACKET_SIZE_BYTES;
-
-
-        sem_post(&data_p->tx_mutex);
-    }
-    transfer->valid_length = TX_PACKET_SIZE_BYTES;
-
-	return 0;
+	*/
 }
 
 int soapy_device::writeSamples(std::vector < short *>&bufs, int len,
 			    bool * underrun, unsigned long long timestamp)
 {
 	int rc = 0;
-	unsigned int i;
 	static int time_s_int_prev = 0;
 	static uint64_t start_time_s = 0;
+
+	static int tx_cnt = 0;
 
 	if (bufs.size() != chans) {
 		LOGC(DDEV, ERROR) << "Invalid channel combination " << bufs.size();
@@ -551,19 +518,7 @@ int soapy_device::writeSamples(std::vector < short *>&bufs, int len,
         LOGC(DDEV, ERROR) << "WRONG LENGTH";
     }
 
-
-	if (tx_running == false)
-    {
-        LOGC(DDEV, NOTICE) << "Starting HW Transmit!";
-        int res = hackrf_start_tx(dev, tx_callback, &callback_data);
-        if (res != HACKRF_SUCCESS)
-        {
-            LOGC(DDEV, ERROR) << "Can't Start TX" << res;
-            return 0;
-        }
-        LOGC(DDEV, NOTICE) << "SAMPLES:" << len << std::endl;
-        tx_running = true;
-    }
+	std::vector<std::complex<uint16_t>> txBuffer(PUT_PACKET_SIZE_SAMPLES);
 
     short* data_to_tx_p = (short*)bufs[0];
     for (uint16_t i = 0; i < PUT_PACKET_SIZE_SAMPLES; i++)
@@ -571,42 +526,57 @@ int soapy_device::writeSamples(std::vector < short *>&bufs, int len,
         short data_i = data_to_tx_p[i * 2];
         short data_q = data_to_tx_p[i * 2 + 1];
 
-        tmp_tx_buf_p[i * HACKRF_SAMPLE_SIZE_BYTES] = (uint8_t)(data_i >> 8);
-        tmp_tx_buf_p[i * HACKRF_SAMPLE_SIZE_BYTES + 1] = (uint8_t)(data_q >> 8);
+         txBuffer[i] = std::complex<uint16_t>(data_i, data_q);
     }
 
+	void *buffs[] = {txBuffer.data()};
+
+	thread_enable_cancel(false);
+
+	int flags = 0;
+
+	auto t_now = std::chrono::steady_clock::now();
+    auto start_us = std::chrono::duration_cast<std::chrono::microseconds>(t_now.time_since_epoch()).count();
+
+	// Write the buffer to the stream
+	int ret = device->writeStream(
+            txStream,         // The stream
+            buffs,          // Array of buffer pointers
+            PUT_PACKET_SIZE_SAMPLES,     // Number of samples
+            flags,              // Flags (0 for no flags)
+            0,              // Time in nanoSec (0 for immediate TX)
+            100000          // Timeout in microseconds
+        );
+	thread_enable_cancel(true);
+
+	auto t_now2 = std::chrono::steady_clock::now();
+    auto stop_us = std::chrono::duration_cast<std::chrono::microseconds>(t_now2.time_since_epoch()).count();
+
+	tx_cnt++;
+
+	if (ret < 0)
+	{
+		LOGC(DDEV, ERROR) << "Can't send data: " << ret;
+		return 0;
+	}
+
+	uint64_t delay_us = stop_us - start_us;
+
+	if (tx_cnt < 20)
+	{
+		LOGC(DDEV, NOTICE) << "Duration us:" << delay_us << std::endl;
+		LOGC(DDEV, NOTICE) << "RET:" << ret << std::endl;
+		LOGC(DDEV, NOTICE) << "TIME US:" << stop_us << std::endl;
+		LOGC(DDEV, NOTICE) << "*" << std::endl;
+	}
+	
+
+	/*
     while (PUT_PACKET_SIZE_BYTES > (callback_data.tx_fifo.size - callback_data.tx_fifo.amount))
     {
         usleep(500);
     }
-
-    //LOGC(DDEV, NOTICE) << "*FIFO PUT AMOUNT=" << callback_data.tx_fifo.amount << std::endl;
-    int fifo_res = sfifo_put(&callback_data.tx_fifo, tmp_tx_buf_p, PUT_PACKET_SIZE_BYTES);
-    //LOGC(DDEV, NOTICE) << "FIFO AFTER PUT AMOUNT=" << callback_data.tx_fifo.amount << std::endl;
-    //thread_enable_cancel(true);
-
-
-    /*
-    //delay
-    tx_debug_delay(2207);
-
-    //write to file
-    short* data_to_tx_p = (short*)bufs[0];
-
-    for (uint16_t i = 0; i < TX_PACKET_SIZE_SAMPLES; i++)
-    {
-        short data_i = data_to_tx_p[i * 2];
-        short data_q = data_to_tx_p[i * 2 + 1];
-
-        tmp_tx_buf_p[i * HACKRF_SAMPLE_SIZE_BYTES] = (uint8_t)(data_i >> 8);
-        tmp_tx_buf_p[i * HACKRF_SAMPLE_SIZE_BYTES + 1] = (uint8_t)(data_q >> 8);
-    }
-    log_file.write(reinterpret_cast<char*>(tmp_tx_buf_p), len * 2);//8*2
-    */
-
-
-    //log_file.write(reinterpret_cast<char*>(data_to_tx_p), len * 4);//16*2
-
+	*/
 
     float time_s = (float)timestamp * 1.0f / (float)(SAMPLE_RATE_HZ);
     int time_s_int = (int)time_s;
@@ -626,6 +596,8 @@ int soapy_device::writeSamples(std::vector < short *>&bufs, int len,
         time_s_int_prev = time_s_int;
         LOGC(DDEV, NOTICE) << "TIME_S:" << time_s_int << " ERR_CNT=" << callback_data.tx_err1 << std::endl;
         //LOGC(DDEV, NOTICE) << "SAMPLES:" << len << std::endl;
+
+		LOGC(DDEV, NOTICE) << "Duration us:" << delay_us << std::endl;
     }
     return len;
 
@@ -678,8 +650,7 @@ bool soapy_device::setTxFreq(double wFreq, size_t chan)
 		return false;
 
 	uint64_t target_freq_hz = (uint64_t)wFreq;
-	//target_freq_hz = 20e6;
-	hackrf_set_freq(dev, target_freq_hz);
+	device->setFrequency(SOAPY_SDR_TX, 0, (double)target_freq_hz);
 
 	return true;
 }
@@ -716,39 +687,28 @@ bool soapy_device::setRxFreq(double wFreq, size_t chan)
 
 void soapy_device::init_gains()
 {
-    int res;
+    //int res;
 
-    int tx_gain_db = 26;
+    int tx_gain_db = 60;
 
-    res = hackrf_set_txvga_gain(dev, tx_gain_db);
-    if (res != HACKRF_SUCCESS)
-	{
-		printf("hackrf_set_txvga_gain() failed: \n");
-		return;
-	}
+    device->setGain(SOAPY_SDR_TX, 0, (double)tx_gain_db);
+
+	device->setAntenna(SOAPY_SDR_TX, 0, "A"); // Set the TX antenna
+
 	LOGC(DDEV, NOTICE) << "TX gain set to " << tx_gain_db << " dB";
+
 }
 
 void soapy_device::set_rates_tx()
 {
- 	int res;
+ 	//int res;
 
  	unsigned int samp_rate_hz = SAMPLE_RATE_HZ;
 
 	// Set the sample rate
-	res = hackrf_set_sample_rate(dev, samp_rate_hz);
-	if (res != HACKRF_SUCCESS)
-	{
-		LOGC(DDEV, ALERT) << "Failed to set sample rate: " << samp_rate_hz;
-		return;
-	}
+	device->setSampleRate(SOAPY_SDR_TX, 0, samp_rate_hz);
 
-	res = hackrf_set_baseband_filter_bandwidth(dev, 1500000);//1.5MHz
-	if (res != HACKRF_SUCCESS)
-	{
-		printf("hackrf_baseband_filter_bandwidth_set() failed: \n");
-		return;
-	}
+	device->setBandwidth(SOAPY_SDR_TX, 0, 2e6);//2MHz
 
  	//tx_rate = rx_rate = samp_rate_hz;
 	LOGC(DDEV, NOTICE) << "TX samplerate was set to " << samp_rate_hz << " Hz";

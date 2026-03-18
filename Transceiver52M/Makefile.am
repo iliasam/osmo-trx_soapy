@@ -120,7 +120,7 @@ osmo_trx_soapy_SOURCES = osmo-trx.cpp
 osmo_trx_soapy_LDADD = \
 	$(builddir)/device/soapy_trx/libdevice.la \
 	$(COMMON_LDADD) \
-	$(SOAPY_LIBS)
-osmo_trx_soapy_CPPFLAGS  = $(AM_CPPFLAGS) $(SOAPY_CFLAGS)
+	$(SOAPYSDR_LIBS)
+osmo_trx_soapy_CPPFLAGS  = $(AM_CPPFLAGS) $(SOAPYSDR_CFLAGS)
 endif
 

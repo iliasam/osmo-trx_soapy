@@ -31,7 +31,12 @@
 #include <string>
 #include <iostream>
 #include <semaphore.h>
+
 #include <libhackrf/hackrf.h>
+
+#include <SoapySDR/Device.hpp>
+#include <SoapySDR/Formats.hpp>
+#include <SoapySDR/Errors.hpp>
 
 #include <fstream> //log file
 
@@ -62,11 +67,14 @@ struct dev_band_desc {
 	double rxgain2rssioffset_rel; /* dB */
 };
 
-/** A class to handle a LimeSuite supported device */
+/** A class to handle a SoapySDR supported device */
 class soapy_device:public RadioDevice {
 
 private:
+	SoapySDR::Device *device;
 	hackrf_device *dev;
+
+	SoapySDR::Stream *txStream;
 
 	typedef struct {
         uint8_t *buf;
@@ -96,7 +104,7 @@ private:
 
 	} callback_data_t;
 
-	double actualSampleRate;	///< the actual USRP sampling rate
+	double actualSampleRate;	///< the actual Radio sampling rate
 
 	bool started;		///< flag indicates LMS has started
 	bool skipRx;		///< set if LMS is transmit-only.
@@ -128,13 +136,10 @@ private:
 	void set_rates_tx();
 	void init_gains();
 
-	uint8_t *tmp_tx_buf_p;
 	callback_data_t callback_data;
 
 	void sfifo_init(sfifo_t *fifo, uint8_t *buf, uint32_t fifo_size_bytes);
 	int sfifo_put(sfifo_t *fifo, uint8_t *data, uint32_t data_size);
-
-	static int tx_callback(hackrf_transfer* transfer);
 
 	void tx_debug_delay(uint32_t time_us);
 	void test_tx();
@@ -238,10 +243,10 @@ public:
 	/* return the used RX path */
 	std::string getRxAntenna(size_t chan = 0);
 
-	/** sets the RX path to use, returns true if successful and false otherwise */
+	/** sets the TX path to use, returns true if successful and false otherwise */
 	bool setTxAntenna(const std::string & ant, size_t chan = 0);
 
-	/* return the used RX path */
+	/* return the used TX path */
 	std::string getTxAntenna(size_t chan = 0);
 
 	/** return whether user drives synchronization of Tx/Rx of USRP */
