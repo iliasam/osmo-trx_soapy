@@ -518,18 +518,8 @@ int soapy_device::writeSamples(std::vector < short *>&bufs, int len,
         LOGC(DDEV, ERROR) << "WRONG LENGTH";
     }
 
-	std::vector<std::complex<uint16_t>> txBuffer(PUT_PACKET_SIZE_SAMPLES);
 
-    short* data_to_tx_p = (short*)bufs[0];
-    for (uint16_t i = 0; i < PUT_PACKET_SIZE_SAMPLES; i++)
-    {
-        short data_i = data_to_tx_p[i * 2];
-        short data_q = data_to_tx_p[i * 2 + 1];
-
-         txBuffer[i] = std::complex<uint16_t>(data_i, data_q);
-    }
-
-	void *buffs[] = {txBuffer.data()};
+	void *buffs[] = {(short*)bufs[0]};
 
 	thread_enable_cancel(false);
 
