@@ -35,6 +35,8 @@
 #include <SoapySDR/Device.hpp>
 #include <SoapySDR/Formats.hpp>
 #include <SoapySDR/Errors.hpp>
+#include <SoapySDR/Time.hpp>
+
 
 #include <fstream> //log file
 
@@ -72,6 +74,8 @@ private:
 	SoapySDR::Device *device;
 	SoapySDR::Stream *txStream;
 	SoapySDR::Stream *rxStream;
+
+	std::vector<smpl_buf *> rx_buffers;
 
 	typedef struct {
         uint8_t *buf;
@@ -171,7 +175,7 @@ public:
 	@return The number of samples actually read
 	*/
 	int readSamples(std::vector < short *>&buf, int len, bool * overrun,
-			TIMESTAMP timestamp = 0xffffffff, bool * underrun =
+			TIMESTAMP timestamp_in = 0xffffffff, bool * underrun =
 			NULL);
 	/**
 	Write samples to the LMS.

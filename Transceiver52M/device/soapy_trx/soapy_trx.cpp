@@ -41,7 +41,7 @@ extern "C" {
 #endif
 
 
-//#define SAMPLE_BUF_SZ    (1 << 20) /* Size of Rx timestamp based Ring buffer, in bytes */
+#define SAMPLE_BUF_SZ    (1 << 20) /* Size of Rx timestamp based Ring buffer, in bytes */
 
 
 #define PUT_PACKET_SIZE_SAMPLES     2500
@@ -115,11 +115,21 @@ soapy_device::soapy_device(size_t tx_sps, size_t rx_sps, InterfaceType iface, si
 	rx_gains.resize(chans);
 	tx_gains.resize(chans);
 
+	if (chans != 1)
+	{
+		LOGC(DDEV, ERROR) << "Wrong number of channels!";
+	}
+
 	log_file.open("record_u24.sdriq", std::ofstream::out | std::ofstream::binary);
 	if (log_file.is_open())
   	{
     	LOGC(DDEV, NOTICE) << "LOG IS OPEN";
   	}
+
+	rx_buffers.resize(chans);
+
+	/* Set up per-channel Rx timestamp based Ring buffers */
+	rx_buffers[0] = new smpl_buf(SAMPLE_BUF_SZ / sizeof(uint32_t));
 
 }
 
@@ -142,6 +152,8 @@ soapy_device::~soapy_device()
   	}
 
   	sem_destroy(&callback_data.tx_mutex);
+
+	delete rx_buffers[0];
 }
 
 void soapy_device::assign_band_desc(enum gsm_band req_band)
@@ -201,7 +213,7 @@ int soapy_device::open(const std::string &args, int ref, bool swap_channels)
 	}
 
 	//device = SoapySDR::Device::make("driver=plutosdr,usb_direct=1,timestamp_every=2500,loopback=0");
-	device = SoapySDR::Device::make("driver=plutosdr,direct=1,loopback=0");
+	device = SoapySDR::Device::make("driver=plutosdr,direct=1,loopback=0,timestamp_every=2500");
 
 	if (device == nullptr) {
     	LOGC(DDEV, ERROR) << "Soapy device opening error!";
@@ -214,15 +226,15 @@ int soapy_device::open(const std::string &args, int ref, bool swap_channels)
 	set_rates_rx();
 	init_gains();
 
+	/*
 	SoapySDR::Kwargs deviceArgs;
 	deviceArgs["bufflen"] = "2500";
-
 	txStream = device->setupStream(SOAPY_SDR_TX, SOAPY_SDR_CS16, std::vector<size_t>(), deviceArgs);
-	//txStream = device->setupStream(SOAPY_SDR_TX, SOAPY_SDR_CS16, {0}); // Complex signed 16-bit integers (complex int16)
-	//SoapySDR::Stream *txStream = device->setupStream(SOAPY_SDR_TX, SOAPY_SDR_CF32, {0});
-
-	//rxStream = device->setupStream(SOAPY_SDR_RX, SOAPY_SDR_CS16, {0});
 	rxStream = device->setupStream(SOAPY_SDR_RX, SOAPY_SDR_CS16, std::vector<size_t>(), deviceArgs);
+	*/
+
+	txStream = device->setupStream(SOAPY_SDR_TX, SOAPY_SDR_CS16, {0});
+	rxStream = device->setupStream(SOAPY_SDR_RX, SOAPY_SDR_CS16, {0});
 
 	if (txStream == nullptr)
 	{
@@ -257,20 +269,6 @@ int soapy_device::open(const std::string &args, int ref, bool swap_channels)
 		LOGC(DDEV, ERROR) << "Soapy RX stream activate error! " << res;
 		return -1;
 	}
-
-	/*
-	device->setFrequency(SOAPY_SDR_RX, 0, (double)104e6);
-
-	uint16_t tmp_rx_buf[PUT_PACKET_SIZE_SAMPLES * 2];//iq
-	void *buf_rx[] = {tmp_rx_buf};
-	int flags;//flags set by receive operation
-	long long timeNs; //timestamp for receive buffer
-	for (uint8_t i = 0; i < 20; i++)
-	{
-		int num_smpls =  device->readStream(rxStream, buf_rx, PUT_PACKET_SIZE_SAMPLES, flags, timeNs, 100000);
-		LOGC(DDEV, NOTICE) << "num_smpls:" << num_smpls;
-	}
-		*/
 
     callback_data.tx_buf0 = (uint8_t*) malloc(BUFFER_SIZE_BYTES);
     sfifo_init(&callback_data.tx_fifo, callback_data.tx_buf0, BUFFER_SIZE_BYTES);
@@ -458,9 +456,10 @@ GSM::Time soapy_device::minLatency() {
 }
 
 
-// NOTE: Assumes sequential reads
+/// "timestamp_in" - This value is send to this method externally, is starts from 0
+// and increased by "len" (PUT_PACKET_SIZE_SAMPLES) steps.
 int soapy_device::readSamples(std::vector < short *>&bufs, int len, bool * overrun,
-			   TIMESTAMP timestamp, bool * underrun)
+			   TIMESTAMP timestamp_in, bool * underrun)
 {
 	//int rc, num_smpls, expect_smpls;
 	//ssize_t avail_smpls;
@@ -468,6 +467,7 @@ int soapy_device::readSamples(std::vector < short *>&bufs, int len, bool * overr
 	unsigned int i;
 	static int bad_cnt = 0;
 	static int good_cnt = 0;
+	static uint64_t initial_samples = 0;//fixed once at the start, by received timestamp value
 
 	if (bufs.size() != chans) {
 		LOGC(DDEV, ERROR) << "Invalid channel combination " << bufs.size();
@@ -485,6 +485,19 @@ int soapy_device::readSamples(std::vector < short *>&bufs, int len, bool * overr
 	int num_smpls =  device->readStream(rxStream, buf_rx, len, flags, timeNs, 50000); // 50ms timeout
 	thread_enable_cancel(true);
 
+	if (num_smpls <= 0) 
+	{
+		LOGC(DDEV, ERROR) << "Device receive timed out " << num_smpls;
+		return -1;
+	}
+
+	//Received timestamp in samples
+	uint64_t rx_timestamp_samples = SoapySDR::timeNsToTicks(timeNs, (double)SAMPLE_RATE_HZ);
+	if (initial_samples == 0)
+		initial_samples = rx_timestamp_samples;//Fix value
+
+	rx_timestamp_samples = rx_timestamp_samples - initial_samples;//Remove start time offset
+
 	if (num_smpls != PUT_PACKET_SIZE_SAMPLES)
 	{
 		bad_cnt++;
@@ -497,10 +510,9 @@ int soapy_device::readSamples(std::vector < short *>&bufs, int len, bool * overr
 		good_cnt++;
 	}
 
-	if (num_smpls <= 0) 
+	if (good_cnt < 10)
 	{
-		LOGC(DDEV, ERROR) << "Device receive timed out " << num_smpls;
-		return -1;
+		LOGC(DDEV, NOTICE) << "RX Timestamp  " << timeNs << " Samples " << rx_timestamp_samples;
 	}
 
     //usleep(2307);
@@ -536,7 +548,7 @@ int soapy_device::writeSamples(std::vector < short *>&bufs, int len,
 
 	thread_enable_cancel(false);
 
-	int flags = 0;
+	int flags = SOAPY_SDR_HAS_TIME;
 
 	auto t_now = std::chrono::steady_clock::now();
     auto start_us = std::chrono::duration_cast<std::chrono::microseconds>(t_now.time_since_epoch()).count();
