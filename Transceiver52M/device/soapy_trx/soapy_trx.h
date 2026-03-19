@@ -32,8 +32,6 @@
 #include <iostream>
 #include <semaphore.h>
 
-#include <libhackrf/hackrf.h>
-
 #include <SoapySDR/Device.hpp>
 #include <SoapySDR/Formats.hpp>
 #include <SoapySDR/Errors.hpp>
@@ -72,9 +70,8 @@ class soapy_device:public RadioDevice {
 
 private:
 	SoapySDR::Device *device;
-	hackrf_device *dev;
-
 	SoapySDR::Stream *txStream;
+	SoapySDR::Stream *rxStream;
 
 	typedef struct {
         uint8_t *buf;
@@ -134,6 +131,7 @@ private:
 	void assign_band_desc(enum gsm_band req_band);
 
 	void set_rates_tx();
+	void set_rates_rx();
 	void init_gains();
 
 	callback_data_t callback_data;
@@ -142,7 +140,6 @@ private:
 	int sfifo_put(sfifo_t *fifo, uint8_t *data, uint32_t data_size);
 
 	void tx_debug_delay(uint32_t time_us);
-	void test_tx();
 public:
 
 	/** Object constructor */
