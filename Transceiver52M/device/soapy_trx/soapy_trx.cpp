@@ -270,8 +270,9 @@ int soapy_device::open(const std::string &args, int ref, bool swap_channels)
 		return -1;
 	}
 
+	//test_rx();
+
     callback_data.tx_buf0 = (uint8_t*) malloc(BUFFER_SIZE_BYTES);
-    sfifo_init(&callback_data.tx_fifo, callback_data.tx_buf0, BUFFER_SIZE_BYTES);
 
     sem_init(&callback_data.tx_mutex, 0, 1);
 
@@ -285,6 +286,43 @@ int soapy_device::open(const std::string &args, int ref, bool swap_channels)
 			  << " chans: " << chans;
 
 	return DEV_HW_TYPE;
+}
+
+void soapy_device::test_rx()
+{
+	int flags;//flags set by receive operation
+	long long timeNs; //timestamp for receive buffer
+	uint16_t tmp_rx_buf[PUT_PACKET_SIZE_SAMPLES * 2];//iq
+	void *buf_rx[] = {tmp_rx_buf};
+
+	device->setFrequency(SOAPY_SDR_RX, 0, (double)900e6);
+
+	uint64_t diff_ns_prev = 0;
+	uint64_t diff_sps_prev = 0;
+
+	for (int i = 0; i < 400; i++)
+	{
+		thread_enable_cancel(false);
+		int num_smpls = device->readStream(rxStream, buf_rx, PUT_PACKET_SIZE_SAMPLES, flags, timeNs, 50000); // 50ms timeout
+		uint64_t rx_timestamp_samples = SoapySDR::timeNsToTicks(timeNs, (double)SAMPLE_RATE_HZ);
+
+		uint64_t diff_ns = timeNs - diff_ns_prev;
+		diff_ns_prev = timeNs;
+
+		uint64_t diff_sps = rx_timestamp_samples - diff_sps_prev;
+		diff_sps_prev = rx_timestamp_samples;
+
+		uint64_t rx_diff_samples = SoapySDR::timeNsToTicks(diff_ns, (double)SAMPLE_RATE_HZ);
+
+		if (diff_sps != PUT_PACKET_SIZE_SAMPLES)
+		{
+			LOGC(DDEV, NOTICE) << "WRONG NUMBER SPS: " <<  diff_sps;
+		}
+
+		LOGC(DDEV, NOTICE) << " TIME diff: " << diff_ns << " time_ns: " << timeNs << " sps: " << rx_timestamp_samples 
+			<< " sps diff: " << diff_sps << " diff2: " << rx_diff_samples << std::endl;
+		thread_enable_cancel(true);
+	}
 }
 
 
@@ -454,20 +492,24 @@ GSM::Time soapy_device::minLatency() {
 	/* UNUSED on limesdr (only used on usrp1/2) */
 	return GSM::Time(0,0);
 }
-
-
 /// "timestamp_in" - This value is send to this method externally, is starts from 0
 // and increased by "len" (PUT_PACKET_SIZE_SAMPLES) steps.
 int soapy_device::readSamples(std::vector < short *>&bufs, int len, bool * overrun,
 			   TIMESTAMP timestamp_in, bool * underrun)
 {
-	//int rc, num_smpls, expect_smpls;
-	//ssize_t avail_smpls;
-	//TIMESTAMP expect_timestamp;
+	int rc, expect_smpls;
+	ssize_t avail_smpls;//Curenty in the rx buffer
+	TIMESTAMP expect_timestamp;
 	unsigned int i;
-	static int bad_cnt = 0;
-	static int good_cnt = 0;
+	//static int bad_cnt = 0;
+	//static int good_cnt = 0;
 	static uint64_t initial_samples = 0;//fixed once at the start, by received timestamp value
+
+	static uint64_t prev_timestamp_ns = 0;
+	//It is inctremented in this funcion
+	static uint64_t internal_timestamp_samples = 0;
+
+	static  int time_s_int_prev = 0;//test
 
 	if (bufs.size() != chans) {
 		LOGC(DDEV, ERROR) << "Invalid channel combination " << bufs.size();
@@ -477,47 +519,99 @@ int soapy_device::readSamples(std::vector < short *>&bufs, int len, bool * overr
 	*overrun = false;
 	*underrun = false;
 
-	int flags;//flags set by receive operation
-	long long timeNs; //timestamp for receive buffer
-	void *buf_rx[] = {(short*)bufs[0]};
-
-	thread_enable_cancel(false);
-	int num_smpls =  device->readStream(rxStream, buf_rx, len, flags, timeNs, 50000); // 50ms timeout
-	thread_enable_cancel(true);
-
-	if (num_smpls <= 0) 
-	{
-		LOGC(DDEV, ERROR) << "Device receive timed out " << num_smpls;
-		return -1;
+	/* Check that timestamp is valid */
+	rc = rx_buffers[0]->avail_smpls(timestamp_in);
+	if (rc < 0) {
+		LOGC(DDEV, ERROR) << rx_buffers[0]->str_code(rc);
+		LOGC(DDEV, ERROR) << rx_buffers[0]->str_status(timestamp_in);
+		return 0;
 	}
 
-	//Received timestamp in samples
-	uint64_t rx_timestamp_samples = SoapySDR::timeNsToTicks(timeNs, (double)SAMPLE_RATE_HZ);
-	if (initial_samples == 0)
-		initial_samples = rx_timestamp_samples;//Fix value
-
-	rx_timestamp_samples = rx_timestamp_samples - initial_samples;//Remove start time offset
-
-	if (num_smpls != PUT_PACKET_SIZE_SAMPLES)
+	/* Receive samples from HW until we have enough */
+	while ((avail_smpls = rx_buffers[0]->avail_smpls(timestamp_in)) < len)
 	{
-		bad_cnt++;
-		LOGC(DDEV, NOTICE) << "Received  " << num_smpls << " LEN  " << len;
-		LOGC(DDEV, NOTICE) << "bad  " << bad_cnt << " good  " << good_cnt;
-		return len;
-	}
-	else
-	{
-		good_cnt++;
+		thread_enable_cancel(false);
+		int flags;//flags set by receive operation
+		long long timeNs; //timestamp for receive buffer, nanosecnds
+		void *buf_rx[] = {(short*)bufs[0]};
+		expect_smpls = len - avail_smpls;
+
+		int num_smpls =  device->readStream(rxStream, buf_rx, expect_smpls, flags, timeNs, 50000); // 50ms timeout
+		thread_enable_cancel(true);
+
+		if (num_smpls <= 0)
+		{
+			LOGC(DDEV, ERROR) << "Device receive timed out (" << rc << " vs exp " << len << ").";
+			return -1;
+		}
+
+		uint64_t diff_ns = timeNs - prev_timestamp_ns;
+		prev_timestamp_ns = timeNs;
+		//Difference before previous data read in samples
+		uint64_t diff_samples = SoapySDR::timeNsToTicks(diff_ns, (double)SAMPLE_RATE_HZ);
+
+		internal_timestamp_samples += diff_samples;
+
+		//Do not use it directly, it give 2501 jumps sometimes (several time in 1s)
+		//uint64_t rx_timestamp_samples = SoapySDR::timeNsToTicks(timeNs, (double)SAMPLE_RATE_HZ);
+		uint64_t rx_timestamp_samples = internal_timestamp_samples;
+
+		if (initial_samples == 0)
+			initial_samples = rx_timestamp_samples;					   // Fix value
+		rx_timestamp_samples = rx_timestamp_samples - initial_samples; // Remove start time offset
+
+		LOGC(DDEV, DEBUG) << "Received timestamp = " << (TIMESTAMP)rx_timestamp_samples << " (" << num_smpls << ")";
+
+		if (expect_smpls != num_smpls)
+		{
+			LOGC(DDEV, NOTICE) << "Unexpected recv buffer len: expect "
+							   << expect_smpls << " got " << num_smpls
+							   << ", diff=" << expect_smpls - num_smpls;
+		}
+
+		expect_timestamp = timestamp_in + avail_smpls;
+		if (expect_timestamp != (TIMESTAMP)rx_timestamp_samples)
+		{
+			LOGC(DDEV, ERROR) << "Unexpected recv buffer timestamp: expect "
+							  << expect_timestamp << " got " << (TIMESTAMP)rx_timestamp_samples
+							  << ", diff=" << (int32_t)(rx_timestamp_samples - expect_timestamp);
+		}
+
+		//Put received data to the "rx_buffers"
+		rc = rx_buffers[0]->write(bufs[0], num_smpls, (TIMESTAMP)rx_timestamp_samples);
+		if (rc < 0)
+		{
+			LOGC(DDEV, ERROR) << rx_buffers[0]->str_code(rc);
+			LOGC(DDEV, ERROR) << rx_buffers[0]->str_status(timestamp_in);
+			if (rc != smpl_buf::ERROR_OVERFLOW)
+				return 0;
+		}
 	}
 
-	if (good_cnt < 10)
+	//Copy all "len" data to "bufs"
+	rc = rx_buffers[0]->read(bufs[0], len, timestamp_in);
+	if ((rc < 0) || (rc != len))
 	{
-		LOGC(DDEV, NOTICE) << "RX Timestamp  " << timeNs << " Samples " << rx_timestamp_samples;
+		LOGC(DDEV, ERROR) << rx_buffers[0]->str_code(rc) << ". "
+								<< rx_buffers[0]->str_status(timestamp_in)
+								<< ", (len=" << len << ")";
+		return 0;
 	}
 
+	//LOGC(DDEV, NOTICE) << "RX Timestamp  " << timeNs << " Samples " << rx_timestamp_samples;
+	
     //usleep(2307);
 
-	return num_smpls;
+	float time_s = (float)timestamp_in * 1.0f / (float)(SAMPLE_RATE_HZ);
+    int time_s_int = (int)time_s;
+
+    if (time_s_int_prev != time_s_int)
+    {
+        time_s_int_prev = time_s_int;
+        LOGC(DDEV, NOTICE) << "RX TIME_S:" << time_s_int << std::endl;
+    }
+
+	return len;
 }
 
 
@@ -583,10 +677,10 @@ int soapy_device::writeSamples(std::vector < short *>&bufs, int len,
 
 	if (tx_cnt < 20)
 	{
-		LOGC(DDEV, NOTICE) << "Duration us:" << delay_us << std::endl;
-		LOGC(DDEV, NOTICE) << "RET:" << ret << std::endl;
-		LOGC(DDEV, NOTICE) << "TIME US:" << stop_us << std::endl;
-		LOGC(DDEV, NOTICE) << "*" << std::endl;
+		//LOGC(DDEV, NOTICE) << "Duration us:" << delay_us << std::endl;
+		//LOGC(DDEV, NOTICE) << "RET:" << ret << std::endl;
+		//LOGC(DDEV, NOTICE) << "TIME US:" << stop_us << std::endl;
+		//LOGC(DDEV, NOTICE) << "*" << std::endl;
 	}
 	
 
@@ -602,21 +696,11 @@ int soapy_device::writeSamples(std::vector < short *>&bufs, int len,
 
     if (time_s_int_prev != time_s_int)
     {
-        if (time_s_int == 1)
-        {
-            start_time_s = (unsigned long)time(NULL);
-        }
-        else
-        {
-            uint64_t diff_s = (unsigned long)time(NULL) - start_time_s;
-            LOGC(DDEV, NOTICE) << "REAL TIME_S:" << diff_s << std::endl;
-        }
-
         time_s_int_prev = time_s_int;
-        LOGC(DDEV, NOTICE) << "TIME_S:" << time_s_int << " ERR_CNT=" << callback_data.tx_err1 << std::endl;
+        //LOGC(DDEV, NOTICE) << "TX TIME_S:" << time_s_int << " ERR_CNT=" << callback_data.tx_err1 << std::endl;
         //LOGC(DDEV, NOTICE) << "SAMPLES:" << len << std::endl;
 
-		LOGC(DDEV, NOTICE) << "Duration us:" << delay_us << std::endl;
+		//LOGC(DDEV, NOTICE) << "Duration us:" << delay_us << std::endl;
     }
     return len;
 
@@ -722,28 +806,28 @@ void soapy_device::init_gains()
 void soapy_device::set_rates_tx()
 {
  	//int res;
- 	unsigned int samp_rate_hz = SAMPLE_RATE_HZ;
-
 	// Set the sample rate
-	device->setSampleRate(SOAPY_SDR_TX, 0, samp_rate_hz);
+	device->setSampleRate(SOAPY_SDR_TX, 0, SAMPLE_RATE_HZ);
 	device->setBandwidth(SOAPY_SDR_TX, 0, 2e6);//2MHz
 
  	//tx_rate = rx_rate = samp_rate_hz;
-	LOGC(DDEV, NOTICE) << "TX samplerate was set to " << samp_rate_hz << " Hz";
+	LOGC(DDEV, NOTICE) << "TX samplerate was set to " << SAMPLE_RATE_HZ << " Hz";
 	ts_offset = 60; // FIXME: actual blade offset, should equal b2xx
 }
 
 void soapy_device::set_rates_rx()
 {
  	//int res;
- 	unsigned int samp_rate_hz = SAMPLE_RATE_HZ;
-
 	// Set the sample rate
-	device->setSampleRate(SOAPY_SDR_RX, 0, samp_rate_hz);
+	device->setSampleRate(SOAPY_SDR_RX, 0, SAMPLE_RATE_HZ);
 	device->setBandwidth(SOAPY_SDR_RX, 0, 2e6);//2MHz
 
+	double real_freq_hz = device->getSampleRate(SOAPY_SDR_RX, 0);
+
  	//tx_rate = rx_rate = samp_rate_hz;
-	LOGC(DDEV, NOTICE) << "RX samplerate was set to " << samp_rate_hz << " Hz";
+	LOGC(DDEV, NOTICE) << "RX target samplerate " << SAMPLE_RATE_HZ << " Hz";
+
+	LOGC(DDEV, NOTICE) << "RX samplerate was set to " << real_freq_hz << " Hz";
 	ts_offset = 60; // FIXME: actual blade offset, should equal b2xx
 }
 
@@ -761,48 +845,4 @@ RadioDevice *RadioDevice::make(size_t tx_sps, size_t rx_sps,
 		return NULL;
 	}
 	return new soapy_device(tx_sps, rx_sps, iface, chans, lo_offset, tx_paths, rx_paths);
-}
-
-
-void soapy_device::sfifo_init(sfifo_t *fifo, uint8_t *buf, uint32_t fifo_size_bytes)
-{
-    fifo->head = fifo->tail = fifo->amount = 0;
-    fifo->buf = buf;
-    fifo->size = fifo_size_bytes;
-
-    printf("FIFO size=%d\n", fifo_size_bytes);
-}
-
-//Put item to the FIFO
-int soapy_device::sfifo_put(sfifo_t *fifo, uint8_t *data, uint32_t data_size)
-{
-    sem_wait(&callback_data.tx_mutex);
-
-    if (data_size <= (fifo->size - fifo->amount))
-    {
-
-        uint32_t upper_size = fifo->size - fifo->head;
-        if (upper_size > data_size)
-        {
-            upper_size = data_size;
-        }
-
-        memcpy((void *)&fifo->buf[fifo->head], &data[0], upper_size);
-        uint32_t lower_size = data_size - upper_size;
-        memcpy(&fifo->buf[0], (void *)&data[upper_size], lower_size);
-        fifo->head += data_size;
-        fifo->head %= fifo->size;
-        fifo->amount += data_size;
-    }
-    else
-    {
-        sem_post(&callback_data.tx_mutex);
-        printf("FIFO ERR1, amount=%d\n", fifo->amount);
-        return -1;
-    }
-
-    //printf("FIFO amount=%d\n", fifo->amount);
-
-    sem_post(&callback_data.tx_mutex);
-    return 0;
 }

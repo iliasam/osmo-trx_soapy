@@ -77,25 +77,12 @@ private:
 
 	std::vector<smpl_buf *> rx_buffers;
 
-	typedef struct {
-        uint8_t *buf;
-
-        uint32_t head; //in bytes
-        uint32_t tail; //in bytes
-
-
-        uint32_t amount; //in bytes
-        uint32_t size; //in bytes
-    } sfifo_t;
-
     typedef struct
 	{
         uint8_t *tx_buf0;
         uint8_t *tx_buf1;
         uint8_t tx_buffer_ready_to_tx_id;
         bool tx_has_new_data;//Data prepared but not send
-
-        sfifo_t tx_fifo;
 
         std::ofstream *log_file_p;
 
@@ -138,10 +125,9 @@ private:
 	void set_rates_rx();
 	void init_gains();
 
-	callback_data_t callback_data;
+	void test_rx();
 
-	void sfifo_init(sfifo_t *fifo, uint8_t *buf, uint32_t fifo_size_bytes);
-	int sfifo_put(sfifo_t *fifo, uint8_t *data, uint32_t data_size);
+	callback_data_t callback_data;
 
 	void tx_debug_delay(uint32_t time_us);
 public:
