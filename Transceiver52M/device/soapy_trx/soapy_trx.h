@@ -77,27 +77,15 @@ private:
 
 	std::vector<smpl_buf *> rx_buffers;
 
-    typedef struct
-	{
-        uint8_t *tx_buf0;
-        uint8_t *tx_buf1;
-        uint8_t tx_buffer_ready_to_tx_id;
-        bool tx_has_new_data;//Data prepared but not send
-
-        std::ofstream *log_file_p;
-
-        sem_t tx_mutex;
-
-        uint32_t tx_err1;
-
-	} callback_data_t;
-
-	double actualSampleRate;	///< the actual Radio sampling rate
-
-	bool started;		///< flag indicates LMS has started
-	bool skipRx;		///< set if LMS is transmit-only.
+	bool started;		///< flag indicates Soapy has started
 
 	TIMESTAMP ts_initial, ts_offset;
+
+	/// @brief  Received timestamp value - in nanoseconds, Raw data
+	uint64_t rx_timestamp_ns;
+
+	/// @brief Value of "timestamp_in" for corresponding "rx_timestamp_ns"
+	TIMESTAMP rx_timestamp_samples;
 
 	std::vector<double> tx_gains, rx_gains;
 	bool band_ass_curr_sess; /* true if  "band" was set after last POWEROFF */
@@ -127,8 +115,6 @@ private:
 
 	void test_rx();
 
-	callback_data_t callback_data;
-
 	void tx_debug_delay(uint32_t time_us);
 public:
 
@@ -138,13 +124,13 @@ public:
 		  const std::vector<std::string>& rx_paths);
 	~soapy_device();
 
-	/** Instantiate the LMS */
+	/** Instantiate the Soapy */
 	int open(const std::string &args, int ref, bool swap_channels);
 
-	/** Start the LMS */
+	/** Start the Soapy */
 	bool start();
 
-	/** Stop the LMS */
+	/** Stop the Soapy */
 	bool stop();
 
 	enum TxWindowType getWindowType() {
@@ -152,22 +138,22 @@ public:
 	}
 
 	/**
-	Read samples from the LMS.
+	Read samples from the Soapy.
 	@param buf preallocated buf to contain read result
 	@param len number of samples desired
 	@param overrun Set if read buffer has been overrun, e.g. data not being read fast enough
 	@param timestamp The timestamp of the first samples to be read
-	@param underrun Set if LMS does not have data to transmit, e.g. data not being sent fast enough
+	@param underrun Set if Soapy does not have data to transmit, e.g. data not being sent fast enough
 	@return The number of samples actually read
 	*/
 	int readSamples(std::vector < short *>&buf, int len, bool * overrun,
 			TIMESTAMP timestamp_in = 0xffffffff, bool * underrun =
 			NULL);
 	/**
-	Write samples to the LMS.
+	Write samples to the Soapy.
 	@param buf Contains the data to be written.
 	@param len number of samples to write.
-	@param underrun Set if LMS does not have data to transmit, e.g. data not being sent fast enough
+	@param underrun Set if Soapy does not have data to transmit, e.g. data not being sent fast enough
 	@param timestamp The timestamp of the first sample of the data buffer.
 	@return The number of samples actually written
 	*/
@@ -200,7 +186,7 @@ public:
 
 	/** returns the full-scale receive amplitude **/
 	double fullScaleOutputValue() {
-		return (double)255;
+		return (double)10000.0;
 	}
 
 	/** sets the receive chan gain, returns the gain setting **/
@@ -250,7 +236,7 @@ public:
 		return 0;
 	}
 	inline double getSampleRate() {
-		return actualSampleRate;
+		return 0;
 	}
 };
 

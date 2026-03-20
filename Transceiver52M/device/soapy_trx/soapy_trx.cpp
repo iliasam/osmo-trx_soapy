@@ -151,8 +151,6 @@ soapy_device::~soapy_device()
     	log_file.close();
   	}
 
-  	sem_destroy(&callback_data.tx_mutex);
-
 	delete rx_buffers[0];
 }
 
@@ -222,6 +220,9 @@ int soapy_device::open(const std::string &args, int ref, bool swap_channels)
 
 	ts_initial = 0;//do not delete!
 
+	rx_timestamp_ns = 0;
+	rx_timestamp_samples = 0;
+
 	set_rates_tx();
 	set_rates_rx();
 	init_gains();
@@ -271,14 +272,6 @@ int soapy_device::open(const std::string &args, int ref, bool swap_channels)
 	}
 
 	//test_rx();
-
-    callback_data.tx_buf0 = (uint8_t*) malloc(BUFFER_SIZE_BYTES);
-
-    sem_init(&callback_data.tx_mutex, 0, 1);
-
-    callback_data.tx_err1 = 0;
-
-    callback_data.log_file_p = &log_file;
 
 	LOGC(DDEV, NOTICE) << "creating SOAPY TRX device:"
 			  << " RXSPS: " << rx_sps
@@ -511,6 +504,8 @@ int soapy_device::readSamples(std::vector < short *>&bufs, int len, bool * overr
 
 	static  int time_s_int_prev = 0;//test
 
+	bool update_timestamp_flag = false;
+
 	if (bufs.size() != chans) {
 		LOGC(DDEV, ERROR) << "Invalid channel combination " << bufs.size();
 		return -1;
@@ -518,6 +513,7 @@ int soapy_device::readSamples(std::vector < short *>&bufs, int len, bool * overr
 
 	*overrun = false;
 	*underrun = false;
+
 
 	/* Check that timestamp is valid */
 	rc = rx_buffers[0]->avail_smpls(timestamp_in);
@@ -543,6 +539,14 @@ int soapy_device::readSamples(std::vector < short *>&bufs, int len, bool * overr
 		{
 			LOGC(DDEV, ERROR) << "Device receive timed out (" << rc << " vs exp " << len << ").";
 			return -1;
+		}
+
+		// In fact, we enter here then (timestamp_in+2500) block is filling with data
+		if (!update_timestamp_flag)
+		{
+			update_timestamp_flag = true;//Protect of owerwrite in the next while()
+			rx_timestamp_ns = timeNs;
+			rx_timestamp_samples = timestamp_in;
 		}
 
 		uint64_t diff_ns = timeNs - prev_timestamp_ns;
@@ -625,6 +629,10 @@ int soapy_device::writeSamples(std::vector < short *>&bufs, int len,
 
 	static int tx_cnt = 0;
 
+	static bool timestamp_lock0 = false; 
+	static bool timestamp_lock = false; 
+	static uint64_t prev_timestamp_ns = 0;
+
 	if (bufs.size() != chans) {
 		LOGC(DDEV, ERROR) << "Invalid channel combination " << bufs.size();
 		return -1;
@@ -637,6 +645,37 @@ int soapy_device::writeSamples(std::vector < short *>&bufs, int len,
         LOGC(DDEV, ERROR) << "WRONG LENGTH";
     }
 
+	// Wait for RX to get first data packet
+	while (rx_timestamp_ns == 0)
+	{
+		usleep(500);
+	}
+
+	if ((rx_timestamp_samples >= timestamp) && (timestamp_lock0 == false))
+	{
+		//Simulate the we transmetted data to get a new bigger "timestamp"
+		return len;
+	}
+	else
+	{
+		timestamp_lock0 = true;
+	}
+
+	//If we enter here, target TX "timestamp" is bigger (in future) that "rx_timestamp_samples"
+	//TX Timestamp is in the future comparing to the received, so we need to increse value
+
+	uint64_t tx_timestamp_ns = 0;
+	if (!timestamp_lock)
+	{
+		timestamp_lock = true;
+		tx_timestamp_ns = rx_timestamp_ns + SoapySDR::ticksToTimeNs(PUT_PACKET_SIZE_SAMPLES * 2, (double)SAMPLE_RATE_HZ);
+	}
+	else
+	{
+		//Just add fixed value
+		 tx_timestamp_ns = prev_timestamp_ns + SoapySDR::ticksToTimeNs(PUT_PACKET_SIZE_SAMPLES, (double)SAMPLE_RATE_HZ);
+	}
+	prev_timestamp_ns = tx_timestamp_ns;
 
 	void *buffs[] = {(short*)bufs[0]};
 
@@ -647,19 +686,18 @@ int soapy_device::writeSamples(std::vector < short *>&bufs, int len,
 	auto t_now = std::chrono::steady_clock::now();
     auto start_us = std::chrono::duration_cast<std::chrono::microseconds>(t_now.time_since_epoch()).count();
 
-	/*
 	// Write the buffer to the stream, this is blocking function, nearly 2314us.
 	int ret = device->writeStream(
             txStream,         // The stream
             buffs,          // Array of buffer pointers
             PUT_PACKET_SIZE_SAMPLES,     // Number of samples
             flags,              // Flags (0 for no flags)
-            0,              // Time in nanoSec (0 for immediate TX)
+            (tx_timestamp_ns + 5),              // Time in nanoSec (0 for immediate TX)
             100000          // Timeout in microseconds
         );
-		*/
-	int ret = 0;
-	usleep(2314);
+
+	//int ret = 0;
+	//usleep(2314);
 	thread_enable_cancel(true);
 
 	auto t_now2 = std::chrono::steady_clock::now();
@@ -683,24 +721,16 @@ int soapy_device::writeSamples(std::vector < short *>&bufs, int len,
 		//LOGC(DDEV, NOTICE) << "*" << std::endl;
 	}
 	
-
-	/*
-    while (PUT_PACKET_SIZE_BYTES > (callback_data.tx_fifo.size - callback_data.tx_fifo.amount))
-    {
-        usleep(500);
-    }
-	*/
-
     float time_s = (float)timestamp * 1.0f / (float)(SAMPLE_RATE_HZ);
     int time_s_int = (int)time_s;
 
     if (time_s_int_prev != time_s_int)
     {
         time_s_int_prev = time_s_int;
-        //LOGC(DDEV, NOTICE) << "TX TIME_S:" << time_s_int << " ERR_CNT=" << callback_data.tx_err1 << std::endl;
+        //LOGC(DDEV, NOTICE) << "TX TIME_S:" << time_s_int << std::endl;
         //LOGC(DDEV, NOTICE) << "SAMPLES:" << len << std::endl;
 
-		//LOGC(DDEV, NOTICE) << "Duration us:" << delay_us << std::endl;
+		LOGC(DDEV, NOTICE) << "Duration us:" << delay_us << std::endl;
     }
     return len;
 
