@@ -40,6 +40,7 @@ extern "C" {
 #include "config.h"
 #endif
 
+//#define SOAPY_LOOPBACK_TEST 
 
 #define SAMPLE_BUF_SZ    (1 << 20) /* Size of Rx timestamp based Ring buffer, in bytes */
 
@@ -135,7 +136,6 @@ soapy_device::soapy_device(size_t tx_sps, size_t rx_sps, InterfaceType iface, si
 
 soapy_device::~soapy_device()
 {
-	unsigned int i;
 	LOGC(DDEV, NOTICE) << "Closing SOAPY device";
 
     if (device) {
@@ -145,6 +145,10 @@ soapy_device::~soapy_device()
         device->closeStream(rxStream);
 		SoapySDR::Device::unmake(device);
 	}
+
+#ifdef SOAPY_LOOPBACK_TEST
+	free(test_tx_buf);
+#endif
 
 	if (log_file.is_open())
   	{
@@ -272,6 +276,12 @@ int soapy_device::open(const std::string &args, int ref, bool swap_channels)
 	}
 
 	//test_rx();
+
+#ifdef SOAPY_LOOPBACK_TEST
+	//iq buffer
+	test_tx_buf = (uint16_t*) malloc(PUT_PACKET_SIZE_SAMPLES * sizeof(uint16_t) * 2);
+	memset(test_tx_buf, 0, (PUT_PACKET_SIZE_SAMPLES * sizeof(uint16_t) * 2));
+#endif
 
 	LOGC(DDEV, NOTICE) << "creating SOAPY TRX device:"
 			  << " RXSPS: " << rx_sps
@@ -602,6 +612,10 @@ int soapy_device::readSamples(std::vector < short *>&bufs, int len, bool * overr
 		return 0;
 	}
 
+#ifdef SOAPY_LOOPBACK_TEST
+	process_test_rx_data(timestamp_in, bufs[0]);
+#endif
+
 	//LOGC(DDEV, NOTICE) << "RX Timestamp  " << timeNs << " Samples " << rx_timestamp_samples;
 	
     //usleep(2307);
@@ -632,6 +646,9 @@ int soapy_device::writeSamples(std::vector < short *>&bufs, int len,
 	static bool timestamp_lock0 = false; 
 	static bool timestamp_lock = false; 
 	static uint64_t prev_timestamp_ns = 0;
+
+	static uint32_t packet_cnt = 0;
+	static uint64_t initial_rx_timestamp_ns = 0;
 
 	if (bufs.size() != chans) {
 		LOGC(DDEV, ERROR) << "Invalid channel combination " << bufs.size();
@@ -667,17 +684,28 @@ int soapy_device::writeSamples(std::vector < short *>&bufs, int len,
 	uint64_t tx_timestamp_ns = 0;
 	if (!timestamp_lock)
 	{
+		packet_cnt = 0;
 		timestamp_lock = true;
-		tx_timestamp_ns = rx_timestamp_ns + SoapySDR::ticksToTimeNs(PUT_PACKET_SIZE_SAMPLES * 2, (double)SAMPLE_RATE_HZ);
+		initial_rx_timestamp_ns = rx_timestamp_ns;
+		tx_timestamp_ns = initial_rx_timestamp_ns + SoapySDR::ticksToTimeNs(PUT_PACKET_SIZE_SAMPLES * 1, (double)SAMPLE_RATE_HZ);
 	}
 	else
 	{
 		//Just add fixed value
-		 tx_timestamp_ns = prev_timestamp_ns + SoapySDR::ticksToTimeNs(PUT_PACKET_SIZE_SAMPLES, (double)SAMPLE_RATE_HZ);
+		packet_cnt++;
+		uint64_t samples = PUT_PACKET_SIZE_SAMPLES * (1 + packet_cnt);
+		tx_timestamp_ns = initial_rx_timestamp_ns + SoapySDR::ticksToTimeNs(samples, (double)SAMPLE_RATE_HZ);
 	}
 	prev_timestamp_ns = tx_timestamp_ns;
 
+#ifdef SOAPY_LOOPBACK_TEST
+	generate_test_tx(timestamp);
+	//Fill "test_tx_buf"
+	generate_test_tx(timestamp);
+	void *buffs[] = {(short*)test_tx_buf};
+#else
 	void *buffs[] = {(short*)bufs[0]};
+#endif
 
 	thread_enable_cancel(false);
 
@@ -692,7 +720,7 @@ int soapy_device::writeSamples(std::vector < short *>&bufs, int len,
             buffs,          // Array of buffer pointers
             PUT_PACKET_SIZE_SAMPLES,     // Number of samples
             flags,              // Flags (0 for no flags)
-            (tx_timestamp_ns + 5),              // Time in nanoSec (0 for immediate TX)
+            (tx_timestamp_ns),              // Time in nanoSec (0 for immediate TX)
             100000          // Timeout in microseconds
         );
 
@@ -737,6 +765,82 @@ int soapy_device::writeSamples(std::vector < short *>&bufs, int len,
 }
 
 //&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&
+
+/// @brief Generate TX data ("test_tx_buf") that will be send to te radio
+/// @param timestamp - timestamp in samples
+void soapy_device::generate_test_tx(TIMESTAMP timestamp)
+{
+	//One step is 2.3ms
+	uint32_t step = timestamp / PUT_PACKET_SIZE_SAMPLES; //0,1,2,3...
+
+	uint8_t step_local = step % 64;
+	//uint8_t pulses_num = (step_local < 3) ? (step_local + 1) : 0; //1,2,3 pulses
+
+	if (step_local == 0)
+		test_tx_timestamp = timestamp;
+
+	uint32_t pulse_length = PUT_PACKET_SIZE_SAMPLES / 6; //in samples
+	uint32_t start_idx = PUT_PACKET_SIZE_SAMPLES / 2;//center of he packet
+	uint32_t  stop_idx = start_idx + pulse_length;
+	//i is a sample index
+	for (uint32_t i = start_idx; i < stop_idx; i++)
+	{
+		float A = (step_local == 0) ? 5000.0f : 0.0f;
+		uint32_t int_idx = i - start_idx;
+		//uint32_t int_zone_cnt = int_idx * 3 / pulse_length;
+		test_tx_buf[i*2] = (uint16_t)(A * cos(M_PI * int_idx / 10));
+		test_tx_buf[i*2 + 1] = (uint16_t)(A * sin(M_PI * int_idx / 10));
+	}
+}
+
+void soapy_device::process_test_rx_data(TIMESTAMP timestamp, int16_t* rx_data)
+{
+	uint32_t step = timestamp / PUT_PACKET_SIZE_SAMPLES; //0,1,2,3...
+
+	uint16_t max_vale = 0;
+	uint16_t start_pos = 0;
+
+	static uint64_t time_s_int_prev= 0;
+
+	static uint16_t last_max_pos = 0;
+	static uint64_t int_test_tx_step;
+	static uint64_t int_test_rx_step;
+
+	for (uint32_t i = 0; i < PUT_PACKET_SIZE_SAMPLES; i++)
+	{
+		int16_t curr_i_value = rx_data[i*2];
+		if (curr_i_value > max_vale)
+		{
+			max_vale = curr_i_value;
+		}
+
+		if ((curr_i_value > 500) && (start_pos == 0))
+			start_pos = i;
+	}
+
+	if (max_vale > 500)
+	{
+		last_max_pos = start_pos;
+		int_test_tx_step = test_tx_timestamp / PUT_PACKET_SIZE_SAMPLES;
+		int_test_rx_step = step;
+	}
+
+	float time_s = (float)timestamp * 1.0f / (float)(SAMPLE_RATE_HZ);
+    int time_s_int = (int)time_s;
+
+
+    if (time_s_int_prev != time_s_int)
+    {
+        time_s_int_prev = time_s_int;
+        LOGC(DDEV, NOTICE) << "MAX POS:" << last_max_pos << std::endl;
+		LOGC(DDEV, NOTICE) << "TX step:" << int_test_tx_step << " RX step:" << int_test_rx_step << std::endl;
+    }
+
+	if ((step < 2000) && (max_vale > 500))
+	{
+		LOGC(DDEV, NOTICE) << "RX MAX: " << max_vale << " step: " << step << " pos: " << start_pos;
+	}
+}
 
 void soapy_device::tx_debug_delay(uint32_t time_us)
 {
@@ -793,8 +897,6 @@ bool soapy_device::setRxFreq(double wFreq, size_t chan)
 	uint16_t req_arfcn;
 	enum gsm_band req_band;
 
-	LOGCHAN(chan, DDEV, NOTICE) << "Setting Rx Freq to " << wFreq << " Hz";
-
 	req_arfcn = gsm_freq102arfcn(wFreq / 1000 / 100, 1);
 	if (req_arfcn == 0xffff) {
 		LOGCHAN(chan, DDEV, ALERT) << "Unknown ARFCN for Rx Frequency " << wFreq / 1000 << " kHz";
@@ -809,6 +911,12 @@ bool soapy_device::setRxFreq(double wFreq, size_t chan)
 	if (!set_band(req_band))
 		return false;
 
+#ifdef SOAPY_LOOPBACK_TEST
+	wFreq += 45e6;//same as TX
+#endif
+
+	LOGCHAN(chan, DDEV, NOTICE) << "Setting Rx Freq to " << wFreq << " Hz";
+
 	uint64_t target_freq_hz = (uint64_t)wFreq;
 	device->setFrequency(SOAPY_SDR_RX, 0, (double)target_freq_hz);
 
@@ -821,7 +929,7 @@ void soapy_device::init_gains()
     //int res;
 
     int tx_gain_db = 60;
-	int rx_gain_db = 40;
+	int rx_gain_db = 50;
 
     device->setGain(SOAPY_SDR_TX, 0, (double)tx_gain_db);
 	device->setGain(SOAPY_SDR_RX, 0, (double)rx_gain_db);
@@ -850,7 +958,7 @@ void soapy_device::set_rates_rx()
  	//int res;
 	// Set the sample rate
 	device->setSampleRate(SOAPY_SDR_RX, 0, SAMPLE_RATE_HZ);
-	device->setBandwidth(SOAPY_SDR_RX, 0, 2e6);//2MHz
+	device->setBandwidth(SOAPY_SDR_RX, 0, 1.5e6);//2MHz
 
 	double real_freq_hz = device->getSampleRate(SOAPY_SDR_RX, 0);
 

@@ -97,6 +97,10 @@ private:
 	std::ofstream log_file;
 	bool tx_running;
 
+	/// @brief Used for storing test TX buffer
+	uint16_t *test_tx_buf;
+	TIMESTAMP test_tx_timestamp;
+
 	bool do_calib(size_t chan);
 	bool do_filters(size_t chan);
 	void log_ant_list(bool dir_tx, size_t chan, std::ostringstream& os);
@@ -114,6 +118,8 @@ private:
 	void init_gains();
 
 	void test_rx();
+	void generate_test_tx(TIMESTAMP timestamp);
+	void process_test_rx_data(TIMESTAMP timestamp, int16_t* rx_data);
 
 	void tx_debug_delay(uint32_t time_us);
 public:
