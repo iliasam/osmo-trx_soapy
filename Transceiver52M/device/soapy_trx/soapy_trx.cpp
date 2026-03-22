@@ -42,6 +42,8 @@ extern "C" {
 
 //#define SOAPY_LOOPBACK_TEST 
 
+#define SOAPY_TX_OFFSET_SAMPLES		65
+
 #define SAMPLE_BUF_SZ    (1 << 20) /* Size of Rx timestamp based Ring buffer, in bytes */
 
 
@@ -495,6 +497,8 @@ GSM::Time soapy_device::minLatency() {
 	/* UNUSED on limesdr (only used on usrp1/2) */
 	return GSM::Time(0,0);
 }
+
+
 /// "timestamp_in" - This value is send to this method externally, is starts from 0
 // and increased by "len" (PUT_PACKET_SIZE_SAMPLES) steps.
 int soapy_device::readSamples(std::vector < short *>&bufs, int len, bool * overrun,
@@ -645,10 +649,11 @@ int soapy_device::writeSamples(std::vector < short *>&bufs, int len,
 
 	static bool timestamp_lock0 = false; 
 	static bool timestamp_lock = false; 
-	static uint64_t prev_timestamp_ns = 0;
 
 	static uint32_t packet_cnt = 0;
 	static uint64_t initial_rx_timestamp_ns = 0;
+
+	static uint16_t err_cnt_test = 0;
 
 	if (bufs.size() != chans) {
 		LOGC(DDEV, ERROR) << "Invalid channel combination " << bufs.size();
@@ -691,17 +696,36 @@ int soapy_device::writeSamples(std::vector < short *>&bufs, int len,
 	}
 	else
 	{
-		//Just add fixed value
 		packet_cnt++;
 		uint64_t samples = PUT_PACKET_SIZE_SAMPLES * (1 + packet_cnt);
+		//Just add fixed value
 		tx_timestamp_ns = initial_rx_timestamp_ns + SoapySDR::ticksToTimeNs(samples, (double)SAMPLE_RATE_HZ);
+
+		//Based on last RX data
+		uint64_t realtime_tx_timestamp_ns = rx_timestamp_ns + SoapySDR::ticksToTimeNs(PUT_PACKET_SIZE_SAMPLES * 5, (double)SAMPLE_RATE_HZ);
+	
+		int64_t diffs_ns = realtime_tx_timestamp_ns - tx_timestamp_ns;
+		uint64_t diff_ns = abs(diffs_ns);
+
+		if ((diff_ns > 100e3) && (err_cnt_test < 100)) //100us
+		{
+			LOGC(DDEV, NOTICE) << "BIG DIFF: " << diff_ns;
+			LOGC(DDEV, NOTICE) << "tx_timestamp_ns: " << tx_timestamp_ns << " realtime_tx_timestamp_ns: " << realtime_tx_timestamp_ns;
+			err_cnt_test++;
+		}
+		else
+		{
+			initial_rx_timestamp_ns = tx_timestamp_ns - SoapySDR::ticksToTimeNs(samples, (double)SAMPLE_RATE_HZ);
+			tx_timestamp_ns = realtime_tx_timestamp_ns;
+		}
 	}
-	prev_timestamp_ns = tx_timestamp_ns;
+
+	//Additional static offset
+	tx_timestamp_ns -= SoapySDR::ticksToTimeNs(SOAPY_TX_OFFSET_SAMPLES, (double)SAMPLE_RATE_HZ);
 
 #ifdef SOAPY_LOOPBACK_TEST
 	generate_test_tx(timestamp);
 	//Fill "test_tx_buf"
-	generate_test_tx(timestamp);
 	void *buffs[] = {(short*)test_tx_buf};
 #else
 	void *buffs[] = {(short*)bufs[0]};
@@ -777,7 +801,7 @@ void soapy_device::generate_test_tx(TIMESTAMP timestamp)
 	//uint8_t pulses_num = (step_local < 3) ? (step_local + 1) : 0; //1,2,3 pulses
 
 	if (step_local == 0)
-		test_tx_timestamp = timestamp;
+		test_tx_timestamp = timestamp;//update test_tx_timestamp at the TX
 
 	uint32_t pulse_length = PUT_PACKET_SIZE_SAMPLES / 6; //in samples
 	uint32_t start_idx = PUT_PACKET_SIZE_SAMPLES / 2;//center of he packet
