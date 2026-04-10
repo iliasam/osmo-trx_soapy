@@ -51,12 +51,13 @@ enum soapy_dev_type {
 };
 
 struct dev_band_desc {
-	/* Maximum LimeSuite Tx Gain which can be set/used without distorting
+	/* Maximum SDR Tx Gain which can be set/used without distorting
 	   the output * signal, and the resulting real output power measured
 	   when that gain is used.
 	 */
-	double nom_lms_tx_gain;  /* dB */
+	double nom_sdr_tx_gain;  /* dB */
 	double nom_out_tx_power; /* dBm */
+
 	/* Factor used to infer base real RSSI offset on the Rx path based on current
 	   configured RxGain. The resulting rssiOffset is added to the per burst
 	   calculated energy in upper layers. These values were empirically
@@ -85,7 +86,9 @@ private:
 	uint64_t rx_timestamp_ns;
 
 	/// @brief Value of "timestamp_in" for corresponding "rx_timestamp_ns"
-	TIMESTAMP rx_timestamp_samples;
+	TIMESTAMP rx_timestamp_in_samples;
+
+	bool rx_is_stable;
 
 	std::vector<double> tx_gains, rx_gains;
 	bool band_ass_curr_sess; /* true if  "band" was set after last POWEROFF */
@@ -93,9 +96,6 @@ private:
 	struct dev_band_desc band_desc;
 
 	enum soapy_dev_type m_dev_type;
-
-	std::ofstream log_file;
-	bool tx_running;
 
 	/// @brief Used for storing test TX buffer
 	uint16_t *test_tx_buf;
@@ -106,8 +106,6 @@ private:
 	void log_ant_list(bool dir_tx, size_t chan, std::ostringstream& os);
 	int get_ant_idx(const std::string & name, bool dir_tx, size_t chan);
 	bool flush_recv(size_t num_pkts);
-	//void update_stream_stats_rx(size_t chan, bool *overrun);
-	//void update_stream_stats_tx(size_t chan, bool *underrun);
 	bool do_clock_src_freq(enum ReferenceType ref, double freq);
 	void get_dev_band_desc(dev_band_desc& desc);
 	bool set_band(enum gsm_band req_band);
@@ -160,11 +158,11 @@ public:
 	@param buf Contains the data to be written.
 	@param len number of samples to write.
 	@param underrun Set if Soapy does not have data to transmit, e.g. data not being sent fast enough
-	@param timestamp The timestamp of the first sample of the data buffer.
+	@param timestamp_in The timestamp of the first sample of the data buffer.
 	@return The number of samples actually written
 	*/
 	int writeSamples(std::vector < short *>&bufs, int len, bool * underrun,
-			 TIMESTAMP timestamp = 0xffffffff);
+			 TIMESTAMP timestamp_in = 0xffffffff);
 
 	/** Update the alignment between the read and write timestamps */
 	bool updateAlignment(TIMESTAMP timestamp);
