@@ -1,5 +1,8 @@
-This is a fork of OsmoTRX - https://github.com/iliasam/osmo-trx_soapy  
-with added support of SoapySDR  
+This is a fork of OsmoTRX - https://github.com/osmocom/osmo-trx  
+with added support of the SoapySDR  
+  
+You will need to have the SoapySDR library installed.
+Check it before starting build: pkg-config --modversion SoapySDR   
   
 Build:
 cd osmo-trx_soapy  
@@ -9,6 +12,7 @@ make -j5
 cd Transceiver52M  
 ./osmo-trx-soapy -C test1.cfg  
   
+Tested only with a PlutoSDR-compatible transceiver.  
 
   
 About OsmoTRX
