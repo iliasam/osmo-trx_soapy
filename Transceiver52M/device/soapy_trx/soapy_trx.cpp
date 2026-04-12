@@ -49,6 +49,12 @@ extern "C" {
 #define SOAPY_TX_OFFSET_SAMPLES		65
 #define SOAPY_TX_OFFSET_PACKETS		5
 
+// This value is fixed
+#define SOAPY_RX_GAIN_DB			50
+
+//This value can be overwritten
+#define SOAPY_TX_GAIN_DB			60
+
 #define SAMPLE_BUF_SZ    (1 << 20) /* Size of Rx timestamp based Ring buffer, in bytes */
 
 
@@ -861,8 +867,8 @@ void soapy_device::init_gains()
 {
     //int res;
 
-    int tx_gain_db = 60;
-	int rx_gain_db = 50;
+    int tx_gain_db = SOAPY_TX_GAIN_DB;
+	int rx_gain_db = SOAPY_RX_GAIN_DB;
 
     device->setGain(SOAPY_SDR_TX, 0, (double)tx_gain_db);
 	device->setGain(SOAPY_SDR_RX, 0, (double)rx_gain_db);

@@ -1,3 +1,16 @@
+This is a fork of OsmoTRX - https://github.com/iliasam/osmo-trx_soapy  
+with added support of SoapySDR  
+  
+Build:
+cd osmo-trx_soapy  
+autoreconf -fi  
+./configure --without-uhd --without-lms --with-soapy-trx  
+make -j5  
+cd Transceiver52M  
+./osmo-trx-soapy -C test1.cfg  
+  
+
+  
 About OsmoTRX
 =============
 
