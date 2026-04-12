@@ -80,7 +80,7 @@ private:
 
 	bool started;		///< flag indicates Soapy has started
 
-	TIMESTAMP ts_initial, ts_offset;
+	TIMESTAMP ts_initial;
 
 	/// @brief  Received timestamp value - in nanoseconds, Raw data
 	uint64_t rx_timestamp_ns;

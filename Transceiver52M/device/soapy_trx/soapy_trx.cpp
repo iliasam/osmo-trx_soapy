@@ -40,6 +40,10 @@ extern "C" {
 #include "config.h"
 #endif
 
+// This test is needed to check how RX is hearing TX.
+// RX and TX set to a same frequency (downling), TX is sending short sine pulses periodically (pulse start is at the center of the packet)
+// RX data is processed to find start of the pulse. Using this it is possible to adjust 
+// "SOAPY_TX_OFFSET_SAMPLES" and "SOAPY_TX_OFFSET_PACKETS" below
 //#define SOAPY_LOOPBACK_TEST 
 
 #define SOAPY_TX_OFFSET_SAMPLES		65
@@ -48,10 +52,9 @@ extern "C" {
 #define SAMPLE_BUF_SZ    (1 << 20) /* Size of Rx timestamp based Ring buffer, in bytes */
 
 
-#define PUT_PACKET_SIZE_SAMPLES     2500
+#define SOAPY_PACKET_SIZE_SAMPLES     2500
 
-#define BUFFER_SIZE_BYTES           PUT_PACKET_SIZE_SAMPLES * 3
-
+//~1.08 MHz
 #define SAMPLE_RATE_HZ              (GSMRATE * tx_sps)
 
 
@@ -183,7 +186,8 @@ void soapy_device::get_dev_band_desc(dev_band_desc& desc)
 int soapy_device::open(const std::string &args, int ref, bool swap_channels)
 {
 	LOGC(DDEV, INFO) << "SOAPY TRX HW Open";
-
+	LOGC(DDEV, NOTICE) << args;
+	const char* deviceArgs = args.c_str();
 	m_dev_type = soapy_dev_type::SOAPY_TYPE1;
 
 	SoapySDR::KwargsList sdr_results = SoapySDR::Device::enumerate("driver=plutosdr");
@@ -194,8 +198,7 @@ int soapy_device::open(const std::string &args, int ref, bool swap_channels)
 		return -1;
 	}
 
-	//device = SoapySDR::Device::make("driver=plutosdr,usb_direct=1,timestamp_every=2500,loopback=0");
-	device = SoapySDR::Device::make("driver=plutosdr,direct=1,loopback=0,timestamp_every=2500");
+	device = SoapySDR::Device::make(deviceArgs);
 
 	if (device == nullptr) {
     	LOGC(DDEV, ERROR) << "Soapy device opening error!";
@@ -210,13 +213,6 @@ int soapy_device::open(const std::string &args, int ref, bool swap_channels)
 	set_rates_tx();
 	set_rates_rx();
 	init_gains();
-
-	/*
-	SoapySDR::Kwargs deviceArgs;
-	deviceArgs["bufflen"] = "2500";
-	txStream = device->setupStream(SOAPY_SDR_TX, SOAPY_SDR_CS16, std::vector<size_t>(), deviceArgs);
-	rxStream = device->setupStream(SOAPY_SDR_RX, SOAPY_SDR_CS16, std::vector<size_t>(), deviceArgs);
-	*/
 
 	txStream = device->setupStream(SOAPY_SDR_TX, SOAPY_SDR_CS16, {0});
 	rxStream = device->setupStream(SOAPY_SDR_RX, SOAPY_SDR_CS16, {0});
@@ -239,7 +235,6 @@ int soapy_device::open(const std::string &args, int ref, bool swap_channels)
 	size_t rx_mtu_size = device->getStreamMTU(rxStream);
 	LOGC(DDEV, NOTICE) << "RX MTU Size " <<  rx_mtu_size;
 	
-
 	int res = 0;
 	res = device->activateStream(txStream); // Start the stream
 	if (res != 0)
@@ -255,12 +250,17 @@ int soapy_device::open(const std::string &args, int ref, bool swap_channels)
 		return -1;
 	}
 
+	/* configure antennas */
+	if (!set_antennas()) {
+		LOGC(DDEV, FATAL) << "Soapy antenna setting failed";
+	}
+
 	//test_rx();
 
 #ifdef SOAPY_LOOPBACK_TEST
 	//iq buffer
-	test_tx_buf = (uint16_t*) malloc(PUT_PACKET_SIZE_SAMPLES * sizeof(uint16_t) * 2);
-	memset(test_tx_buf, 0, (PUT_PACKET_SIZE_SAMPLES * sizeof(uint16_t) * 2));
+	test_tx_buf = (uint16_t*) malloc(SOAPY_PACKET_SIZE_SAMPLES * sizeof(uint16_t) * 2);
+	memset(test_tx_buf, 0, (SOAPY_PACKET_SIZE_SAMPLES * sizeof(uint16_t) * 2));
 #endif
 
 	LOGC(DDEV, NOTICE) << "creating SOAPY TRX device:"
@@ -275,7 +275,7 @@ void soapy_device::test_rx()
 {
 	int flags;//flags set by receive operation
 	long long timeNs; //timestamp for receive buffer
-	uint16_t tmp_rx_buf[PUT_PACKET_SIZE_SAMPLES * 2];//iq
+	uint16_t tmp_rx_buf[SOAPY_PACKET_SIZE_SAMPLES * 2];//iq
 	void *buf_rx[] = {tmp_rx_buf};
 
 	device->setFrequency(SOAPY_SDR_RX, 0, (double)900e6);
@@ -286,7 +286,7 @@ void soapy_device::test_rx()
 	for (int i = 0; i < 20; i++)
 	{
 		thread_enable_cancel(false);
-		device->readStream(rxStream, buf_rx, PUT_PACKET_SIZE_SAMPLES, flags, timeNs, 50000); // 50ms timeout
+		device->readStream(rxStream, buf_rx, SOAPY_PACKET_SIZE_SAMPLES, flags, timeNs, 50000); // 50ms timeout
 		uint64_t rx_timestamp_samples = SoapySDR::timeNsToTicks(timeNs, (double)SAMPLE_RATE_HZ);
 
 		uint64_t diff_ns = timeNs - diff_ns_prev;
@@ -297,7 +297,7 @@ void soapy_device::test_rx()
 
 		uint64_t rx_diff_samples = SoapySDR::timeNsToTicks(diff_ns, (double)SAMPLE_RATE_HZ);
 
-		if (diff_sps != PUT_PACKET_SIZE_SAMPLES)
+		if (diff_sps != SOAPY_PACKET_SIZE_SAMPLES)
 		{
 			LOGC(DDEV, NOTICE) << "WRONG NUMBER SPS: " <<  diff_sps;
 		}
@@ -318,26 +318,19 @@ bool soapy_device::start()
 		return false;
 	}
 
-	//if (!restart())
-	//	return false;
-
 	started = true;
 	return true;
 }
 
 bool soapy_device::stop()
 {
-	//unsigned int i;
-
 	LOGC(DDEV, NOTICE) << "dev stop";
 
 	if (!started)
 		return true;
 
 	band_ass_curr_sess = false;
-
 	started = false;
-
 	LOGC(DDEV, NOTICE) << "dev stop done";
 
 	return true;
@@ -361,7 +354,7 @@ double soapy_device::setRxGain(double dB, size_t chan)
 	if (dB < minRxGain())
 		dB = minRxGain();
 
-	LOGCHAN(chan, DDEV, NOTICE) << "Setting RX gain to " << dB << " dB";
+	//LOGCHAN(chan, DDEV, NOTICE) << "Setting RX gain to " << dB << " dB";
 
 	//if (LMS_SetGaindB(m_lms_dev, LMS_CH_RX, chan, dB) < 0)
 	//	LOGCHAN(chan, DDEV, ERR) << "Error setting RX gain to " << dB << " dB";
@@ -443,6 +436,7 @@ bool soapy_device::flush_recv(size_t num_pkts)
 
 bool soapy_device::setRxAntenna(const std::string & ant, size_t chan)
 {
+	device->setAntenna(SOAPY_SDR_RX, 0, ant.c_str()); // Set the RX antenna
 	return true;
 }
 
@@ -453,7 +447,7 @@ std::string soapy_device::getRxAntenna(size_t chan)
 
 bool soapy_device::setTxAntenna(const std::string & ant, size_t chan)
 {
-	//ilia todo
+	device->setAntenna(SOAPY_SDR_TX, 0, ant.c_str()); // Set the TX antenna
 	return true;
 }
 
@@ -474,15 +468,13 @@ GSM::Time soapy_device::minLatency() {
 
 
 /// "timestamp_in" - This value is send to this method externally, is starts from 0
-// and increased by "len" (PUT_PACKET_SIZE_SAMPLES) steps.
+// and increased by "len" (SOAPY_PACKET_SIZE_SAMPLES) steps.
 int soapy_device::readSamples(std::vector < short *>&bufs, int len, bool * overrun,
 			   TIMESTAMP timestamp_in, bool * underrun)
 {
 	int rc, expect_smpls;
 	ssize_t avail_smpls;//Curenty in the rx buffer
 	TIMESTAMP expect_timestamp;
-	//static int bad_cnt = 0;
-	//static int good_cnt = 0;
 	static uint64_t initial_samples = 0;//fixed once at the start, by received timestamp value
 
 	static uint64_t prev_timestamp_ns = 0;
@@ -542,7 +534,7 @@ int soapy_device::readSamples(std::vector < short *>&bufs, int len, bool * overr
 		//Difference between previous data read in samples
 		uint64_t diff_samples = SoapySDR::timeNsToTicks(diff_ns, (double)SAMPLE_RATE_HZ);
 
-		if ((diff_samples != PUT_PACKET_SIZE_SAMPLES) && startup_lock_flag)
+		if ((diff_samples != SOAPY_PACKET_SIZE_SAMPLES) && startup_lock_flag)
 		{
 			LOGC(DDEV, ERROR) << "Received wrong start diff samples = " << diff_samples;
 			continue;
@@ -637,11 +629,10 @@ int soapy_device::writeSamples(std::vector < short *>&bufs, int len,
 
 	*underrun = false;
 
-    if (len != PUT_PACKET_SIZE_SAMPLES)
+    if (len != SOAPY_PACKET_SIZE_SAMPLES)
     {
 		LOGC(DDEV, ERROR) << "WRONG LENGTH";
 	}
-
 
 	// Wait for RX to get first data packet
 	while ((rx_timestamp_ns == 0) && (rx_is_stable == false))
@@ -664,7 +655,7 @@ int soapy_device::writeSamples(std::vector < short *>&bufs, int len,
 
 	//Based on last RX data
 	uint64_t realtime_tx_timestamp_ns = rx_timestamp_ns + 
-		SoapySDR::ticksToTimeNs(PUT_PACKET_SIZE_SAMPLES * SOAPY_TX_OFFSET_PACKETS, (double)SAMPLE_RATE_HZ);
+		SoapySDR::ticksToTimeNs(SOAPY_PACKET_SIZE_SAMPLES * SOAPY_TX_OFFSET_PACKETS, (double)SAMPLE_RATE_HZ);
 	uint64_t tx_timestamp_ns = realtime_tx_timestamp_ns;
 
 	//Additional static offset
@@ -686,13 +677,12 @@ int soapy_device::writeSamples(std::vector < short *>&bufs, int len,
 	int ret = device->writeStream(
             txStream,         // The stream
             buffs,          // Array of buffer pointers
-            PUT_PACKET_SIZE_SAMPLES,     // Number of samples
+            SOAPY_PACKET_SIZE_SAMPLES,     // Number of samples
             flags,              // Flags (0 for no flags)
             (tx_timestamp_ns),              // Time in nanoSec (0 for immediate TX)
             100000          // Timeout in microseconds
         );
 
-	//int ret = 0;
 	//usleep(2314);
 	thread_enable_cancel(true);
 
@@ -713,7 +703,7 @@ int soapy_device::writeSamples(std::vector < short *>&bufs, int len,
 void soapy_device::generate_test_tx(TIMESTAMP timestamp)
 {
 	//One step is 2.3ms
-	uint32_t step = timestamp / PUT_PACKET_SIZE_SAMPLES; //0,1,2,3...
+	uint32_t step = timestamp / SOAPY_PACKET_SIZE_SAMPLES; //0,1,2,3...
 
 	uint8_t step_local = step % 64;
 	//uint8_t pulses_num = (step_local < 3) ? (step_local + 1) : 0; //1,2,3 pulses
@@ -721,8 +711,8 @@ void soapy_device::generate_test_tx(TIMESTAMP timestamp)
 	if (step_local == 0)
 		test_tx_timestamp = timestamp;//update test_tx_timestamp at the TX
 
-	uint32_t pulse_length = PUT_PACKET_SIZE_SAMPLES / 6; //in samples
-	uint32_t start_idx = PUT_PACKET_SIZE_SAMPLES / 2;//center of he packet
+	uint32_t pulse_length = SOAPY_PACKET_SIZE_SAMPLES / 6; //in samples
+	uint32_t start_idx = SOAPY_PACKET_SIZE_SAMPLES / 2;//center of he packet
 	uint32_t  stop_idx = start_idx + pulse_length;
 	//i is a sample index
 	for (uint32_t i = start_idx; i < stop_idx; i++)
@@ -737,10 +727,10 @@ void soapy_device::generate_test_tx(TIMESTAMP timestamp)
 
 void soapy_device::process_test_rx_data(TIMESTAMP timestamp, int16_t* rx_data)
 {
-	uint32_t step = timestamp / PUT_PACKET_SIZE_SAMPLES; //0,1,2,3...
+	uint32_t step = timestamp / SOAPY_PACKET_SIZE_SAMPLES; //0,1,2,3...
 
 	uint16_t max_vale = 0;
-	uint16_t start_pos = 0;
+	uint16_t start_rx_pos = 0;
 
 	static uint64_t time_s_int_prev= 0;
 
@@ -748,7 +738,7 @@ void soapy_device::process_test_rx_data(TIMESTAMP timestamp, int16_t* rx_data)
 	static uint64_t int_test_tx_step;
 	static uint64_t int_test_rx_step;
 
-	for (uint32_t i = 0; i < PUT_PACKET_SIZE_SAMPLES; i++)
+	for (uint32_t i = 0; i < SOAPY_PACKET_SIZE_SAMPLES; i++)
 	{
 		int16_t curr_i_value = rx_data[i*2];
 		if (curr_i_value > max_vale)
@@ -756,14 +746,15 @@ void soapy_device::process_test_rx_data(TIMESTAMP timestamp, int16_t* rx_data)
 			max_vale = curr_i_value;
 		}
 
-		if ((curr_i_value > 500) && (start_pos == 0))
-			start_pos = i;
+		if ((curr_i_value > 500) && (start_rx_pos == 0))
+			start_rx_pos = i; //Fix received pulse start position
 	}
 
+	// Signal was detected
 	if (max_vale > 500)
 	{
-		last_max_pos = start_pos;
-		int_test_tx_step = test_tx_timestamp / PUT_PACKET_SIZE_SAMPLES;
+		last_max_pos = start_rx_pos;
+		int_test_tx_step = test_tx_timestamp / SOAPY_PACKET_SIZE_SAMPLES;
 		int_test_rx_step = step;
 	}
 
@@ -774,13 +765,13 @@ void soapy_device::process_test_rx_data(TIMESTAMP timestamp, int16_t* rx_data)
     if (time_s_int_prev != time_s_int)
     {
         time_s_int_prev = time_s_int;
-        LOGC(DDEV, NOTICE) << "MAX POS:" << last_max_pos << std::endl;
+        LOGC(DDEV, NOTICE) << "MAX RX POS:" << last_max_pos << std::endl;
 		LOGC(DDEV, NOTICE) << "TX step:" << int_test_tx_step << " RX step:" << int_test_rx_step << std::endl;
     }
 
 	if ((step < 2000) && (max_vale > 500))
 	{
-		LOGC(DDEV, NOTICE) << "RX MAX: " << max_vale << " step: " << step << " pos: " << start_pos;
+		LOGC(DDEV, NOTICE) << "RX MAX: " << max_vale << " step: " << step << " pos: " << start_rx_pos;
 	}
 }
 
@@ -876,9 +867,6 @@ void soapy_device::init_gains()
     device->setGain(SOAPY_SDR_TX, 0, (double)tx_gain_db);
 	device->setGain(SOAPY_SDR_RX, 0, (double)rx_gain_db);
 
-	device->setAntenna(SOAPY_SDR_TX, 0, "A"); // Set the TX antenna
-	device->setAntenna(SOAPY_SDR_RX, 0, "A_BALANCED"); // Set the RX antenna
-
 	LOGC(DDEV, NOTICE) << "TX gain set to " << tx_gain_db << " dB";
 	LOGC(DDEV, NOTICE) << "RX gain set to " << rx_gain_db << " dB";
 }
@@ -892,7 +880,6 @@ void soapy_device::set_rates_tx()
 
  	//tx_rate = rx_rate = samp_rate_hz;
 	LOGC(DDEV, NOTICE) << "TX samplerate was set to " << SAMPLE_RATE_HZ << " Hz";
-	ts_offset = 60; // FIXME: actual blade offset, should equal b2xx
 }
 
 void soapy_device::set_rates_rx()
@@ -908,7 +895,6 @@ void soapy_device::set_rates_rx()
 	LOGC(DDEV, NOTICE) << "RX target samplerate " << SAMPLE_RATE_HZ << " Hz";
 
 	LOGC(DDEV, NOTICE) << "RX samplerate was set to " << real_freq_hz << " Hz";
-	ts_offset = 60; // FIXME: actual blade offset, should equal b2xx
 }
 
 RadioDevice *RadioDevice::make(size_t tx_sps, size_t rx_sps,
