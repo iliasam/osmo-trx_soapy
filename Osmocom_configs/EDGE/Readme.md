@@ -1,4 +1,4 @@
-GSM Base station for VOICE.  
+GSM Base station for EDGE.  
   
 You will need "tmux" for running these scripts.  
 Set correct path to your "osmo-trx-soapy" in start_base.sh  
