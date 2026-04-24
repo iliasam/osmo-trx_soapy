@@ -1,6 +1,8 @@
 This is a fork of OsmoTRX - https://github.com/osmocom/osmo-trx  
 with added support of the SoapySDR  
   
+This folder was added: https://github.com/iliasam/osmo-trx_soapy/tree/my_tests/Transceiver52M/device/soapy_trx  
+  
 You will need to have the SoapySDR library installed.
 Check it before starting build: pkg-config --modversion SoapySDR   
   
@@ -13,6 +15,8 @@ cd Transceiver52M
 ./osmo-trx-soapy -C test1.cfg  
   
 Tested only with a PlutoSDR-compatible transceiver.  
+  
+"Osmocom_configs" - is not a part of OsmoTRX, this is my own Osmocom configs for running Voice and EGE base station.  
 
   
 About OsmoTRX

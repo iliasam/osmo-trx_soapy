@@ -46,11 +46,11 @@ extern "C" {
 // "SOAPY_TX_OFFSET_SAMPLES" and "SOAPY_TX_OFFSET_PACKETS" below
 //#define SOAPY_LOOPBACK_TEST 
 
-#define SOAPY_TX_OFFSET_SAMPLES		65
+#define SOAPY_TX_OFFSET_SAMPLES		75
 #define SOAPY_TX_OFFSET_PACKETS		5
 
 // This value is fixed
-#define SOAPY_RX_GAIN_DB			50
+#define SOAPY_RX_GAIN_DB			40
 
 //This value can be overwritten
 #define SOAPY_TX_GAIN_DB			60
