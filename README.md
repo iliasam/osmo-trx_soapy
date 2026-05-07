@@ -1,5 +1,6 @@
 This is a fork of OsmoTRX - https://github.com/osmocom/osmo-trx  
 with added support of the SoapySDR  
+See this article (in Russian): https://habr.com/ru/articles/1017672/  
   
 This folder was added: https://github.com/iliasam/osmo-trx_soapy/tree/my_tests/Transceiver52M/device/soapy_trx  
   
