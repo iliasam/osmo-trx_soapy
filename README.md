@@ -15,7 +15,8 @@ make -j5
 cd Transceiver52M  
 ./osmo-trx-soapy -C test1.cfg  
   
-Tested only with a PlutoSDR-compatible transceiver.  
+Tested only with a PlutoSDR-compatible transceiver - "OpenSourceSDRLab PlutoSky 7020".  
+This library was used: https://github.com/pgreenland/SoapyPlutoSDR/tree/sdr_gadget_timestamping  
   
 "Osmocom_configs" - is not a part of OsmoTRX, this is my own Osmocom configs for running Voice and EGE base station.  
 
